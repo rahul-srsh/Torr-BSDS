@@ -1,0 +1,4 @@
+.git
+infra/cdk.out
+infra/node_modules
+**/node_modules
