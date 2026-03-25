@@ -5,6 +5,7 @@ import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as servicediscovery from 'aws-cdk-lib/aws-servicediscovery';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as path from 'path';
 
 // ── Networking Construct ──
@@ -86,6 +87,8 @@ interface ServiceDefinition {
 }
 
 class FargateServicesConstruct extends Construct {
+  public readonly logGroups: Record<string, logs.LogGroup>;
+
   constructor(
     scope: Construct,
     id: string,
@@ -97,6 +100,8 @@ class FargateServicesConstruct extends Construct {
   ) {
     super(scope, id);
 
+    this.logGroups = {};
+
     const services: ServiceDefinition[] = [
       { name: 'directory-server', desiredCount: 1 },
       { name: 'guard-node', desiredCount: 1 },
@@ -104,7 +109,6 @@ class FargateServicesConstruct extends Construct {
       { name: 'exit-node', desiredCount: 1 },
     ];
 
-    // Security group shared by all services so they can talk to each other
     const servicesSg = new ec2.SecurityGroup(this, 'ServicesSg', {
       vpc: props.vpc,
       description: 'Allow all traffic between HopVault services',
@@ -113,6 +117,13 @@ class FargateServicesConstruct extends Construct {
     servicesSg.addIngressRule(servicesSg, ec2.Port.allTcp(), 'Allow inter-service traffic');
 
     for (const svc of services) {
+      const logGroup = new logs.LogGroup(this, `LogGroup-${svc.name}`, {
+        logGroupName: `/hopvault/${svc.name}`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+      this.logGroups[svc.name] = logGroup;
+
       const taskDef = new ecs.FargateTaskDefinition(this, `TaskDef-${svc.name}`, {
         memoryLimitMiB: 512,
         cpu: 256,
@@ -129,8 +140,8 @@ class FargateServicesConstruct extends Construct {
         },
         portMappings: [{ containerPort: 8080 }],
         logging: ecs.LogDrivers.awsLogs({
+          logGroup,
           streamPrefix: svc.name,
-          logRetention: logs.RetentionDays.ONE_WEEK,
         }),
         healthCheck: {
           command: ['CMD-SHELL', 'wget -qO- http://localhost:8080/health || exit 1'],
@@ -160,19 +171,121 @@ class FargateServicesConstruct extends Construct {
   }
 }
 
+// ── Observability Construct ──
+class ObservabilityConstruct extends Construct {
+  constructor(
+    scope: Construct,
+    id: string,
+    props: {
+      clusterName: string;
+      serviceNames: string[];
+      logGroups: Record<string, logs.LogGroup>;
+    }
+  ) {
+    super(scope, id);
+
+    const dashboard = new cloudwatch.Dashboard(this, 'HopVaultDashboard', {
+      dashboardName: 'HopVault-Overview',
+    });
+
+    // CPU utilization per service
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'CPU Utilization by Service',
+        width: 12,
+        left: props.serviceNames.map(
+          (name) =>
+            new cloudwatch.Metric({
+              namespace: 'AWS/ECS',
+              metricName: 'CPUUtilization',
+              dimensionsMap: {
+                ClusterName: props.clusterName,
+                ServiceName: name,
+              },
+              statistic: 'Average',
+              period: cdk.Duration.minutes(1),
+              label: name,
+            })
+        ),
+      }),
+      // Memory utilization per service
+      new cloudwatch.GraphWidget({
+        title: 'Memory Utilization by Service',
+        width: 12,
+        left: props.serviceNames.map(
+          (name) =>
+            new cloudwatch.Metric({
+              namespace: 'AWS/ECS',
+              metricName: 'MemoryUtilization',
+              dimensionsMap: {
+                ClusterName: props.clusterName,
+                ServiceName: name,
+              },
+              statistic: 'Average',
+              period: cdk.Duration.minutes(1),
+              label: name,
+            })
+        ),
+      })
+    );
+
+    // Running task count per service
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Running Task Count by Service',
+        width: 12,
+        left: props.serviceNames.map(
+          (name) =>
+            new cloudwatch.Metric({
+              namespace: 'ECS/ContainerInsights',
+              metricName: 'RunningTaskCount',
+              dimensionsMap: {
+                ClusterName: props.clusterName,
+                ServiceName: name,
+              },
+              statistic: 'Average',
+              period: cdk.Duration.minutes(1),
+              label: name,
+            })
+        ),
+      }),
+      // Log insights error query
+      new cloudwatch.LogQueryWidget({
+        title: 'Recent Errors (all services)',
+        width: 12,
+        logGroupNames: props.serviceNames.map((name) => `/hopvault/${name}`),
+        queryLines: [
+          'fields @timestamp, @logStream, @message',
+          'filter @message like /(?i)(error|fatal|panic)/',
+          'sort @timestamp desc',
+          'limit 50',
+        ],
+      })
+    );
+  }
+}
+
 // ── Main Stack ──
 export class InfraStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    const serviceNames = ['directory-server', 'guard-node', 'relay-node', 'exit-node'];
+
     const networking = new NetworkingConstruct(this, 'Networking');
     const compute = new ComputeConstruct(this, 'Compute', networking.vpc);
     const discovery = new ServiceDiscoveryConstruct(this, 'ServiceDiscovery', networking.vpc);
 
-    new FargateServicesConstruct(this, 'FargateServices', {
+    const fargateServices = new FargateServicesConstruct(this, 'FargateServices', {
       cluster: compute.cluster,
       namespace: discovery.namespace,
       vpc: networking.vpc,
+    });
+
+    new ObservabilityConstruct(this, 'Observability', {
+      clusterName: 'hopvault-cluster',
+      serviceNames,
+      logGroups: fargateServices.logGroups,
     });
 
     // Outputs
