@@ -21,6 +21,7 @@ func TestRegisterHeartbeatNodesAndCircuitHandlers(t *testing.T) {
 	server := newTestDirectoryServer(now, 15*time.Second, 30*time.Second)
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
+	server.randomIntn = func(int) int { return 0 }
 
 	guard := NodeRegistration{
 		NodeID:    "123e4567-e89b-12d3-a456-426614174000",
@@ -95,10 +96,10 @@ func TestRegisterHeartbeatNodesAndCircuitHandlers(t *testing.T) {
 
 	assertStatus(t, nodesRecorder, http.StatusOK)
 
-	var healthyNodes []NodeRecord
+	var healthyNodes NodesByTypeResponse
 	decodeResponse(t, nodesRecorder, &healthyNodes)
-	if len(healthyNodes) != 3 {
-		t.Fatalf("len(healthyNodes) = %d, want 3", len(healthyNodes))
+	if len(healthyNodes.Guard) != 1 || len(healthyNodes.Relay) != 1 || len(healthyNodes.Exit) != 1 {
+		t.Fatalf("grouped healthy nodes = %+v, want 1 guard, 1 relay, 1 exit", healthyNodes)
 	}
 
 	circuitRecorder := httptest.NewRecorder()
@@ -315,6 +316,70 @@ func TestHandlersRejectInvalidRequests(t *testing.T) {
 	}
 }
 
+func TestCircuitRandomizationAndGroupedNodes(t *testing.T) {
+	baseTime := time.Date(2026, time.March, 27, 9, 0, 0, 0, time.UTC)
+	server := newTestDirectoryServer(baseTime, 15*time.Second, 30*time.Second)
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	sequence := []int{0, 0, 0, 1, 1, 1}
+	server.randomIntn = func(int) int {
+		next := sequence[0]
+		sequence = sequence[1:]
+		return next
+	}
+
+	nodes := []NodeRegistration{
+		{NodeID: "123e4567-e89b-12d3-a456-426614174050", NodeType: "guard", Host: "guard-1.local", Port: 9101, PublicKey: "guard-key-1"},
+		{NodeID: "123e4567-e89b-12d3-a456-426614174051", NodeType: "guard", Host: "guard-2.local", Port: 9102, PublicKey: "guard-key-2"},
+		{NodeID: "123e4567-e89b-12d3-a456-426614174052", NodeType: "relay", Host: "relay-1.local", Port: 9201, PublicKey: "relay-key-1"},
+		{NodeID: "123e4567-e89b-12d3-a456-426614174053", NodeType: "relay", Host: "relay-2.local", Port: 9202, PublicKey: "relay-key-2"},
+		{NodeID: "123e4567-e89b-12d3-a456-426614174054", NodeType: "exit", Host: "exit-1.local", Port: 9301, PublicKey: "exit-key-1"},
+		{NodeID: "123e4567-e89b-12d3-a456-426614174055", NodeType: "exit", Host: "exit-2.local", Port: 9302, PublicKey: "exit-key-2"},
+	}
+
+	for _, node := range nodes {
+		performJSONRequest(t, mux, http.MethodPost, "/register", node)
+	}
+
+	nodesRecorder := httptest.NewRecorder()
+	mux.ServeHTTP(nodesRecorder, httptest.NewRequest(http.MethodGet, "/nodes", nil))
+	assertStatus(t, nodesRecorder, http.StatusOK)
+
+	var grouped NodesByTypeResponse
+	decodeResponse(t, nodesRecorder, &grouped)
+	if len(grouped.Guard) != 2 || len(grouped.Relay) != 2 || len(grouped.Exit) != 2 {
+		t.Fatalf("grouped nodes = %+v, want 2 guard, 2 relay, 2 exit", grouped)
+	}
+
+	firstCircuitRecorder := httptest.NewRecorder()
+	mux.ServeHTTP(firstCircuitRecorder, httptest.NewRequest(http.MethodGet, "/circuit", nil))
+	assertStatus(t, firstCircuitRecorder, http.StatusOK)
+
+	var firstCircuit CircuitResponse
+	decodeResponse(t, firstCircuitRecorder, &firstCircuit)
+
+	secondCircuitRecorder := httptest.NewRecorder()
+	mux.ServeHTTP(secondCircuitRecorder, httptest.NewRequest(http.MethodGet, "/circuit", nil))
+	assertStatus(t, secondCircuitRecorder, http.StatusOK)
+
+	var secondCircuit CircuitResponse
+	decodeResponse(t, secondCircuitRecorder, &secondCircuit)
+
+	if firstCircuit.Guard.NodeID == secondCircuit.Guard.NodeID &&
+		firstCircuit.Relay.NodeID == secondCircuit.Relay.NodeID &&
+		firstCircuit.Exit.NodeID == secondCircuit.Exit.NodeID {
+		t.Fatalf("expected different circuit combinations, got %+v and %+v", firstCircuit, secondCircuit)
+	}
+
+	if firstCircuit.Guard.Host == "" || firstCircuit.Guard.Port == 0 || firstCircuit.Guard.PublicKey == "" {
+		t.Fatalf("first circuit guard missing connection fields: %+v", firstCircuit.Guard)
+	}
+	if secondCircuit.Exit.Host == "" || secondCircuit.Exit.Port == 0 || secondCircuit.Exit.PublicKey == "" {
+		t.Fatalf("second circuit exit missing connection fields: %+v", secondCircuit.Exit)
+	}
+}
+
 func TestHealthMonitorTransitionsAndFiltersNodes(t *testing.T) {
 	baseTime := time.Date(2026, time.March, 26, 12, 0, 0, 0, time.UTC)
 	server := newTestDirectoryServer(baseTime, 2*time.Second, 30*time.Second)
@@ -379,10 +444,10 @@ func TestHealthMonitorTransitionsAndFiltersNodes(t *testing.T) {
 	mux.ServeHTTP(nodesRecorder, nodesRequest)
 	assertStatus(t, nodesRecorder, http.StatusOK)
 
-	var healthyNodes []NodeRecord
+	var healthyNodes NodesByTypeResponse
 	decodeResponse(t, nodesRecorder, &healthyNodes)
-	if len(healthyNodes) != 0 {
-		t.Fatalf("len(healthyNodes) = %d, want 0", len(healthyNodes))
+	if len(healthyNodes.Guard) != 0 || len(healthyNodes.Relay) != 0 || len(healthyNodes.Exit) != 0 {
+		t.Fatalf("grouped healthy nodes = %+v, want all groups empty", healthyNodes)
 	}
 
 	circuitRecorder := httptest.NewRecorder()
@@ -400,11 +465,11 @@ func TestHealthMonitorTransitionsAndFiltersNodes(t *testing.T) {
 	mux.ServeHTTP(nodesRecorder, httptest.NewRequest(http.MethodGet, "/nodes", nil))
 	assertStatus(t, nodesRecorder, http.StatusOK)
 	decodeResponse(t, nodesRecorder, &healthyNodes)
-	if len(healthyNodes) != 1 {
-		t.Fatalf("len(healthyNodes) = %d, want 1", len(healthyNodes))
+	if len(healthyNodes.Guard) != 1 || len(healthyNodes.Relay) != 0 || len(healthyNodes.Exit) != 0 {
+		t.Fatalf("grouped healthy nodes = %+v, want only one healthy guard", healthyNodes)
 	}
-	if healthyNodes[0].NodeID != nodes[0].NodeID {
-		t.Fatalf("nodeId = %q, want %q", healthyNodes[0].NodeID, nodes[0].NodeID)
+	if healthyNodes.Guard[0].NodeID != nodes[0].NodeID {
+		t.Fatalf("nodeId = %q, want %q", healthyNodes.Guard[0].NodeID, nodes[0].NodeID)
 	}
 }
 
@@ -471,6 +536,12 @@ func TestHealthMonitorLoopAndTicker(t *testing.T) {
 	}
 	if logs[0] != "[directory-server] node 123e4567-e89b-12d3-a456-426614174030 transitioned to UNHEALTHY" {
 		t.Fatalf("log = %q, want %q", logs[0], "[directory-server] node 123e4567-e89b-12d3-a456-426614174030 transitioned to UNHEALTHY")
+	}
+
+	real := realTicker{Ticker: time.NewTicker(time.Second)}
+	defer real.Stop()
+	if real.C() == nil {
+		t.Fatal("expected real ticker channel to be non-nil")
 	}
 }
 
@@ -568,12 +639,18 @@ func TestNodeRegistryAndHelpers(t *testing.T) {
 		t.Fatalf("transition nodeId = %q, want %q", transitions[0].NodeID, "123e4567-e89b-12d3-a456-426614174102")
 	}
 
-	emptyCircuit, ok := registry.BuildCircuit()
-	if ok {
-		t.Fatalf("expected empty circuit to be invalid, got %+v", emptyCircuit)
+	groupedHealthy := registry.GroupByType(false)
+	if !reflect.DeepEqual(groupedHealthy, NodesByTypeResponse{
+		Guard: []NodeRecord{},
+		Relay: []NodeRecord{},
+		Exit:  []NodeRecord{},
+	}) {
+		t.Fatalf("groupedHealthy = %+v, want no healthy nodes", groupedHealthy)
 	}
-	if !reflect.DeepEqual(emptyCircuit, CircuitResponse{}) {
-		t.Fatalf("emptyCircuit = %+v, want zero value", emptyCircuit)
+
+	groupedAll := registry.GroupByType(true)
+	if len(groupedAll.Guard) != 1 || len(groupedAll.Relay) != 1 || len(groupedAll.Exit) != 0 {
+		t.Fatalf("groupedAll = %+v, want one guard and one relay", groupedAll)
 	}
 
 	if isValidNodeType("guard") != true || isValidNodeType("relay") != true || isValidNodeType("exit") != true {

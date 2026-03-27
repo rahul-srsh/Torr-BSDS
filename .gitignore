@@ -4,6 +4,11 @@
 *.dll
 *.so
 *.dylib
+client/client
+directory-server/directory-server
+exit-node/exit-node
+guard-node/guard-node
+relay-node/relay-node
 
 # Test binary
 *.test

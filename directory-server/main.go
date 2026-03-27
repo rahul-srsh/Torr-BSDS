@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"sort"
 	"strings"
@@ -64,6 +65,12 @@ type CircuitResponse struct {
 	Guard NodeRecord `json:"guard"`
 	Relay NodeRecord `json:"relay"`
 	Exit  NodeRecord `json:"exit"`
+}
+
+type NodesByTypeResponse struct {
+	Guard []NodeRecord `json:"guard"`
+	Relay []NodeRecord `json:"relay"`
+	Exit  []NodeRecord `json:"exit"`
 }
 
 type NodeRegistry struct {
@@ -137,28 +144,25 @@ func (r *NodeRegistry) List(includeUnhealthy bool) []NodeRecord {
 	return nodes
 }
 
-func (r *NodeRegistry) BuildCircuit() (CircuitResponse, bool) {
-	healthyNodes := r.List(false)
-	circuit := CircuitResponse{}
+func (r *NodeRegistry) GroupByType(includeUnhealthy bool) NodesByTypeResponse {
+	grouped := NodesByTypeResponse{
+		Guard: make([]NodeRecord, 0),
+		Relay: make([]NodeRecord, 0),
+		Exit:  make([]NodeRecord, 0),
+	}
 
-	for _, node := range healthyNodes {
+	for _, node := range r.List(includeUnhealthy) {
 		switch node.NodeType {
 		case "guard":
-			if circuit.Guard.NodeID == "" {
-				circuit.Guard = node
-			}
+			grouped.Guard = append(grouped.Guard, node)
 		case "relay":
-			if circuit.Relay.NodeID == "" {
-				circuit.Relay = node
-			}
+			grouped.Relay = append(grouped.Relay, node)
 		case "exit":
-			if circuit.Exit.NodeID == "" {
-				circuit.Exit = node
-			}
+			grouped.Exit = append(grouped.Exit, node)
 		}
 	}
 
-	return circuit, circuit.Guard.NodeID != "" && circuit.Relay.NodeID != "" && circuit.Exit.NodeID != ""
+	return grouped
 }
 
 func (r *NodeRegistry) MarkUnhealthy(now time.Time, timeout time.Duration) []NodeRecord {
@@ -192,6 +196,7 @@ type DirectoryServer struct {
 	logf             logFunc
 	cleanupInterval  time.Duration
 	heartbeatTimeout time.Duration
+	randomIntn       func(int) int
 }
 
 func NewDirectoryServer(registry *NodeRegistry, cleanupInterval, heartbeatTimeout time.Duration) *DirectoryServer {
@@ -205,6 +210,7 @@ func NewDirectoryServer(registry *NodeRegistry, cleanupInterval, heartbeatTimeou
 		logf:             log.Printf,
 		cleanupInterval:  cleanupInterval,
 		heartbeatTimeout: heartbeatTimeout,
+		randomIntn:       rand.Intn,
 	}
 }
 
@@ -301,14 +307,20 @@ func (s *DirectoryServer) deregisterHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *DirectoryServer) nodesHandler(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.registry.List(false))
+	writeJSON(w, http.StatusOK, s.registry.GroupByType(false))
 }
 
 func (s *DirectoryServer) circuitHandler(w http.ResponseWriter, _ *http.Request) {
-	circuit, ok := s.registry.BuildCircuit()
-	if !ok {
+	grouped := s.registry.GroupByType(false)
+	if len(grouped.Guard) == 0 || len(grouped.Relay) == 0 || len(grouped.Exit) == 0 {
 		writeJSONError(w, http.StatusServiceUnavailable, "not enough healthy nodes to build a circuit")
 		return
+	}
+
+	circuit := CircuitResponse{
+		Guard: grouped.Guard[s.randomIntn(len(grouped.Guard))],
+		Relay: grouped.Relay[s.randomIntn(len(grouped.Relay))],
+		Exit:  grouped.Exit[s.randomIntn(len(grouped.Exit))],
 	}
 
 	writeJSON(w, http.StatusOK, circuit)
