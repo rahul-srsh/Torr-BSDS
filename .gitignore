@@ -37,3 +37,9 @@ infra/.terraform/
 infra/*.tfstate
 infra/*.tfstate.backup
 infra/*.tfvars
+terraform.tfstate
+terraform.tfstate.backup
+infra/node_modules/
+*.tfstate
+*.tfstate.*
+.terraform/

@@ -21,6 +21,16 @@ resource "aws_vpc_security_group_ingress_rule" "services_tcp_self" {
   description                  = "Allow inter-service TCP traffic"
 }
 
+# Allow inbound on 8080 from anywhere (for directory server public access)
+resource "aws_vpc_security_group_ingress_rule" "services_public_8080" {
+  security_group_id = aws_security_group.services.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "tcp"
+  from_port         = 8080
+  to_port           = 8080
+  description       = "Allow public access to service port"
+}
+
 resource "aws_ecs_task_definition" "services" {
   for_each = local.service_definitions
 
@@ -92,17 +102,16 @@ resource "aws_ecs_service" "services" {
   deployment_maximum_percent         = 200
 
   network_configuration {
-    subnets          = [aws_subnet.private_az1.id, aws_subnet.private_az2.id]
+    subnets = each.key == "directory-server" ? [
+      aws_subnet.public_az1.id, aws_subnet.public_az2.id
+    ] : [
+      aws_subnet.private_az1.id, aws_subnet.private_az2.id
+    ]
     security_groups  = [aws_security_group.services.id]
-    assign_public_ip = false
-  }
-
-  service_registries {
-    registry_arn = aws_service_discovery_service.services[each.key].arn
+    assign_public_ip = each.key == "directory-server" ? true : false
   }
 
   depends_on = [
     aws_cloudwatch_log_group.services,
-    aws_service_discovery_service.services,
   ]
 }

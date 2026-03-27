@@ -1,0 +1,38 @@
+# ── Build stage ──
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /app
+
+# Copy shared module first
+COPY shared/go.mod ./shared/go.mod
+COPY directory-server/go.mod ./directory-server/go.mod
+
+# Download dependencies
+RUN cd directory-server && go mod download
+
+# Copy source code
+COPY shared/ ./shared/
+COPY directory-server/ ./directory-server/
+
+# Build the directory server binary
+RUN cd directory-server && CGO_ENABLED=0 GOOS=linux go build -o /node-server .
+
+# ── Runtime stage ──
+FROM alpine:3.19
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+
+COPY --from=builder /node-server .
+
+ENV PORT=8080
+ENV NODE_TYPE=directory-server
+ENV DIRECTORY_SERVER_URL=http://directory-server.hopvault.local:8080
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -qO- http://localhost:8080/health || exit 1
+
+ENTRYPOINT ["./node-server"]
