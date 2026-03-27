@@ -2,77 +2,139 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rahul-srsh/Torr-BSDS/shared/config"
 	sharedserver "github.com/rahul-srsh/Torr-BSDS/shared/server"
 )
 
-func TestRegisterHandlerCreatesAndUpdatesNode(t *testing.T) {
-	handler := newHandler(&config.NodeConfig{
-		Port:     "8080",
-		NodeType: "directory-server",
-	})
+func TestRegisterHeartbeatNodesAndCircuitHandlers(t *testing.T) {
+	now := time.Date(2026, time.March, 26, 12, 0, 0, 0, time.UTC)
+	server := newTestDirectoryServer(now, 15*time.Second, 30*time.Second)
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
 
-	first := NodeRegistration{
+	guard := NodeRegistration{
 		NodeID:    "123e4567-e89b-12d3-a456-426614174000",
 		NodeType:  "guard",
 		Host:      "10.0.0.10",
 		Port:      9001,
 		PublicKey: "pubkey-1",
 	}
-
-	recorder := performJSONRequest(t, handler, http.MethodPost, "/register", first)
-	assertStatus(t, recorder, http.StatusCreated)
-
-	var created NodeRegistration
-	decodeResponse(t, recorder, &created)
-	if created != first {
-		t.Fatalf("created registration = %+v, want %+v", created, first)
+	relay := NodeRegistration{
+		NodeID:    "123e4567-e89b-12d3-a456-426614174001",
+		NodeType:  "relay",
+		Host:      "10.0.0.11",
+		Port:      9002,
+		PublicKey: "pubkey-2",
+	}
+	exit := NodeRegistration{
+		NodeID:    "123e4567-e89b-12d3-a456-426614174002",
+		NodeType:  "exit",
+		Host:      "10.0.0.12",
+		Port:      9003,
+		PublicKey: "pubkey-3",
 	}
 
-	updated := first
-	updated.Host = "guard.hopvault.local"
-	updated.Port = 9101
-	updated.PublicKey = "pubkey-2"
+	for _, node := range []NodeRegistration{guard, relay, exit} {
+		recorder := performJSONRequest(t, mux, http.MethodPost, "/register", node)
+		assertStatus(t, recorder, http.StatusCreated)
 
-	recorder = performJSONRequest(t, handler, http.MethodPost, "/register", updated)
+		var created NodeRecord
+		decodeResponse(t, recorder, &created)
+		if created.NodeRegistration != node {
+			t.Fatalf("created registration = %+v, want %+v", created.NodeRegistration, node)
+		}
+		if created.Status != StatusHealthy {
+			t.Fatalf("status = %q, want %q", created.Status, StatusHealthy)
+		}
+		if !created.LastSeen.Equal(now) {
+			t.Fatalf("lastSeen = %s, want %s", created.LastSeen, now)
+		}
+	}
+
+	updatedRelay := relay
+	updatedRelay.Host = "relay.hopvault.local"
+	server.now = func() time.Time { return now.Add(5 * time.Second) }
+	recorder := performJSONRequest(t, mux, http.MethodPost, "/register", updatedRelay)
 	assertStatus(t, recorder, http.StatusCreated)
 
-	var saved NodeRegistration
-	decodeResponse(t, recorder, &saved)
-	if saved != updated {
-		t.Fatalf("updated registration = %+v, want %+v", saved, updated)
+	var updatedRecord NodeRecord
+	decodeResponse(t, recorder, &updatedRecord)
+	if updatedRecord.NodeRegistration != updatedRelay {
+		t.Fatalf("updated relay = %+v, want %+v", updatedRecord.NodeRegistration, updatedRelay)
+	}
+
+	server.now = func() time.Time { return now.Add(10 * time.Second) }
+	heartbeatRecorder := httptest.NewRecorder()
+	heartbeatRequest := httptest.NewRequest(http.MethodPost, "/heartbeat/"+guard.NodeID, nil)
+	mux.ServeHTTP(heartbeatRecorder, heartbeatRequest)
+
+	assertStatus(t, heartbeatRecorder, http.StatusOK)
+
+	var heartbeatRecord NodeRecord
+	decodeResponse(t, heartbeatRecorder, &heartbeatRecord)
+	if heartbeatRecord.NodeID != guard.NodeID {
+		t.Fatalf("heartbeat nodeId = %q, want %q", heartbeatRecord.NodeID, guard.NodeID)
+	}
+	if !heartbeatRecord.LastSeen.Equal(now.Add(10 * time.Second)) {
+		t.Fatalf("heartbeat lastSeen = %s, want %s", heartbeatRecord.LastSeen, now.Add(10*time.Second))
+	}
+
+	nodesRecorder := httptest.NewRecorder()
+	nodesRequest := httptest.NewRequest(http.MethodGet, "/nodes", nil)
+	mux.ServeHTTP(nodesRecorder, nodesRequest)
+
+	assertStatus(t, nodesRecorder, http.StatusOK)
+
+	var healthyNodes []NodeRecord
+	decodeResponse(t, nodesRecorder, &healthyNodes)
+	if len(healthyNodes) != 3 {
+		t.Fatalf("len(healthyNodes) = %d, want 3", len(healthyNodes))
+	}
+
+	circuitRecorder := httptest.NewRecorder()
+	circuitRequest := httptest.NewRequest(http.MethodGet, "/circuit", nil)
+	mux.ServeHTTP(circuitRecorder, circuitRequest)
+
+	assertStatus(t, circuitRecorder, http.StatusOK)
+
+	var circuit CircuitResponse
+	decodeResponse(t, circuitRecorder, &circuit)
+	if circuit.Guard.NodeType != "guard" || circuit.Relay.NodeType != "relay" || circuit.Exit.NodeType != "exit" {
+		t.Fatalf("unexpected circuit = %+v", circuit)
 	}
 
 	debugRecorder := httptest.NewRecorder()
 	debugRequest := httptest.NewRequest(http.MethodGet, "/debug/nodes", nil)
-	handler.ServeHTTP(debugRecorder, debugRequest)
+	mux.ServeHTTP(debugRecorder, debugRequest)
 
 	assertStatus(t, debugRecorder, http.StatusOK)
 
-	var nodes []NodeRegistration
-	decodeResponse(t, debugRecorder, &nodes)
-	if len(nodes) != 1 {
-		t.Fatalf("len(nodes) = %d, want 1", len(nodes))
-	}
-	if nodes[0] != updated {
-		t.Fatalf("listed registration = %+v, want %+v", nodes[0], updated)
+	var debugNodes []NodeRecord
+	decodeResponse(t, debugRecorder, &debugNodes)
+	if len(debugNodes) != 3 {
+		t.Fatalf("len(debugNodes) = %d, want 3", len(debugNodes))
 	}
 }
 
-func TestRegisterHandlerRejectsInvalidPayloads(t *testing.T) {
-	handler := newHandler(&config.NodeConfig{
-		Port:     "8080",
-		NodeType: "directory-server",
-	})
+func TestHandlersRejectInvalidRequests(t *testing.T) {
+	server := newTestDirectoryServer(time.Date(2026, time.March, 26, 12, 0, 0, 0, time.UTC), 15*time.Second, 30*time.Second)
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
 
 	tests := []struct {
 		name           string
+		method         string
+		path           string
 		body           any
 		rawBody        string
 		expectedStatus int
@@ -80,12 +142,24 @@ func TestRegisterHandlerRejectsInvalidPayloads(t *testing.T) {
 	}{
 		{
 			name:           "invalid json",
+			method:         http.MethodPost,
+			path:           "/register",
 			rawBody:        `{"nodeId":`,
 			expectedStatus: http.StatusBadRequest,
 			expectedError:  "invalid JSON payload",
 		},
 		{
-			name: "missing node id",
+			name:           "multiple json values",
+			method:         http.MethodPost,
+			path:           "/register",
+			rawBody:        `{"nodeId":"123e4567-e89b-12d3-a456-426614174011","nodeType":"guard","host":"127.0.0.1","port":8080,"publicKey":"pub"}{"extra":true}`,
+			expectedStatus: http.StatusBadRequest,
+			expectedError:  "invalid JSON payload",
+		},
+		{
+			name:   "missing node id",
+			method: http.MethodPost,
+			path:   "/register",
 			body: map[string]any{
 				"nodeType":  "guard",
 				"host":      "127.0.0.1",
@@ -96,7 +170,9 @@ func TestRegisterHandlerRejectsInvalidPayloads(t *testing.T) {
 			expectedError:  "nodeId is required",
 		},
 		{
-			name: "invalid uuid",
+			name:   "invalid uuid",
+			method: http.MethodPost,
+			path:   "/register",
 			body: map[string]any{
 				"nodeId":    "not-a-uuid",
 				"nodeType":  "guard",
@@ -108,7 +184,9 @@ func TestRegisterHandlerRejectsInvalidPayloads(t *testing.T) {
 			expectedError:  "nodeId must be a valid UUID",
 		},
 		{
-			name: "missing node type",
+			name:   "missing node type",
+			method: http.MethodPost,
+			path:   "/register",
 			body: map[string]any{
 				"nodeId":    "123e4567-e89b-12d3-a456-426614174010",
 				"host":      "127.0.0.1",
@@ -119,9 +197,11 @@ func TestRegisterHandlerRejectsInvalidPayloads(t *testing.T) {
 			expectedError:  "nodeType is required",
 		},
 		{
-			name: "invalid node type",
+			name:   "invalid node type",
+			method: http.MethodPost,
+			path:   "/register",
 			body: map[string]any{
-				"nodeId":    "123e4567-e89b-12d3-a456-426614174001",
+				"nodeId":    "123e4567-e89b-12d3-a456-426614174012",
 				"nodeType":  "middle",
 				"host":      "127.0.0.1",
 				"port":      8080,
@@ -131,9 +211,11 @@ func TestRegisterHandlerRejectsInvalidPayloads(t *testing.T) {
 			expectedError:  "nodeType must be one of: guard, relay, exit",
 		},
 		{
-			name: "missing host",
+			name:   "missing host",
+			method: http.MethodPost,
+			path:   "/register",
 			body: map[string]any{
-				"nodeId":    "123e4567-e89b-12d3-a456-426614174002",
+				"nodeId":    "123e4567-e89b-12d3-a456-426614174013",
 				"nodeType":  "relay",
 				"host":      "",
 				"port":      8080,
@@ -143,21 +225,25 @@ func TestRegisterHandlerRejectsInvalidPayloads(t *testing.T) {
 			expectedError:  "host is required",
 		},
 		{
-			name: "invalid port",
+			name:   "invalid port",
+			method: http.MethodPost,
+			path:   "/register",
 			body: map[string]any{
-				"nodeId":    "123e4567-e89b-12d3-a456-426614174003",
+				"nodeId":    "123e4567-e89b-12d3-a456-426614174014",
 				"nodeType":  "exit",
 				"host":      "127.0.0.1",
-				"port":      0,
+				"port":      70000,
 				"publicKey": "pub",
 			},
 			expectedStatus: http.StatusBadRequest,
 			expectedError:  "port must be between 1 and 65535",
 		},
 		{
-			name: "missing public key",
+			name:   "missing public key",
+			method: http.MethodPost,
+			path:   "/register",
 			body: map[string]any{
-				"nodeId":    "123e4567-e89b-12d3-a456-426614174004",
+				"nodeId":    "123e4567-e89b-12d3-a456-426614174015",
 				"nodeType":  "guard",
 				"host":      "127.0.0.1",
 				"port":      8080,
@@ -167,38 +253,35 @@ func TestRegisterHandlerRejectsInvalidPayloads(t *testing.T) {
 			expectedError:  "publicKey is required",
 		},
 		{
-			name:           "empty body",
-			rawBody:        "",
-			expectedStatus: http.StatusBadRequest,
-			expectedError:  "invalid JSON payload",
+			name:           "unknown heartbeat",
+			method:         http.MethodPost,
+			path:           "/heartbeat/123e4567-e89b-12d3-a456-426614174016",
+			expectedStatus: http.StatusNotFound,
+			expectedError:  "node not found",
 		},
 		{
-			name:           "multiple json values",
-			rawBody:        `{"nodeId":"123e4567-e89b-12d3-a456-426614174011","nodeType":"guard","host":"127.0.0.1","port":8080,"publicKey":"pub"}{"extra":true}`,
-			expectedStatus: http.StatusBadRequest,
-			expectedError:  "invalid JSON payload",
+			name:           "unknown deregister",
+			method:         http.MethodDelete,
+			path:           "/deregister/123e4567-e89b-12d3-a456-426614174017",
+			expectedStatus: http.StatusNotFound,
+			expectedError:  "node not found",
+		},
+		{
+			name:           "circuit unavailable",
+			method:         http.MethodGet,
+			path:           "/circuit",
+			expectedStatus: http.StatusServiceUnavailable,
+			expectedError:  "not enough healthy nodes to build a circuit",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var body *bytes.Reader
-			if tc.rawBody != "" || tc.body == nil {
-				body = bytes.NewReader([]byte(tc.rawBody))
-			} else {
-				payload, err := json.Marshal(tc.body)
-				if err != nil {
-					t.Fatalf("json.Marshal() error = %v", err)
-				}
-				body = bytes.NewReader(payload)
-			}
-
 			recorder := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/register", body)
-			handler.ServeHTTP(recorder, req)
+			req := newRequest(t, tc.method, tc.path, tc.body, tc.rawBody)
+			mux.ServeHTTP(recorder, req)
 
 			assertStatus(t, recorder, tc.expectedStatus)
-
 			var response map[string]string
 			decodeResponse(t, recorder, &response)
 			if response["error"] != tc.expectedError {
@@ -206,60 +289,195 @@ func TestRegisterHandlerRejectsInvalidPayloads(t *testing.T) {
 			}
 		})
 	}
+
+	missingIDHeartbeatRecorder := httptest.NewRecorder()
+	missingIDHeartbeatRequest := httptest.NewRequest(http.MethodPost, "/heartbeat/", nil)
+	missingIDHeartbeatRequest.SetPathValue("nodeId", "")
+	server.heartbeatHandler(missingIDHeartbeatRecorder, missingIDHeartbeatRequest)
+	assertStatus(t, missingIDHeartbeatRecorder, http.StatusBadRequest)
+
+	var heartbeatResponse map[string]string
+	decodeResponse(t, missingIDHeartbeatRecorder, &heartbeatResponse)
+	if heartbeatResponse["error"] != "nodeId is required" {
+		t.Fatalf("error = %q, want %q", heartbeatResponse["error"], "nodeId is required")
+	}
+
+	missingIDDeregisterRecorder := httptest.NewRecorder()
+	missingIDDeregisterRequest := httptest.NewRequest(http.MethodDelete, "/deregister/", nil)
+	missingIDDeregisterRequest.SetPathValue("nodeId", "")
+	server.deregisterHandler(missingIDDeregisterRecorder, missingIDDeregisterRequest)
+	assertStatus(t, missingIDDeregisterRecorder, http.StatusBadRequest)
+
+	var deregisterResponse map[string]string
+	decodeResponse(t, missingIDDeregisterRecorder, &deregisterResponse)
+	if deregisterResponse["error"] != "nodeId is required" {
+		t.Fatalf("error = %q, want %q", deregisterResponse["error"], "nodeId is required")
+	}
 }
 
-func TestDeregisterHandler(t *testing.T) {
-	server := NewDirectoryServer(nil)
+func TestHealthMonitorTransitionsAndFiltersNodes(t *testing.T) {
+	baseTime := time.Date(2026, time.March, 26, 12, 0, 0, 0, time.UTC)
+	server := newTestDirectoryServer(baseTime, 2*time.Second, 30*time.Second)
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 
-	node := NodeRegistration{
-		NodeID:    "123e4567-e89b-12d3-a456-426614174005",
-		NodeType:  "relay",
-		Host:      "127.0.0.1",
-		Port:      8080,
-		PublicKey: "pub",
+	logs := make([]string, 0)
+	server.logf = func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
 	}
 
-	performJSONRequest(t, mux, http.MethodPost, "/register", node)
-
-	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/deregister/"+node.NodeID, nil)
-	mux.ServeHTTP(recorder, req)
-
-	assertStatus(t, recorder, http.StatusOK)
-
-	var response map[string]string
-	decodeResponse(t, recorder, &response)
-	if response["status"] != "deregistered" || response["nodeId"] != node.NodeID {
-		t.Fatalf("unexpected deregister response = %+v", response)
+	nodes := []NodeRegistration{
+		{
+			NodeID:    "123e4567-e89b-12d3-a456-426614174020",
+			NodeType:  "guard",
+			Host:      "guard.local",
+			Port:      9001,
+			PublicKey: "guard-key",
+		},
+		{
+			NodeID:    "123e4567-e89b-12d3-a456-426614174021",
+			NodeType:  "relay",
+			Host:      "relay.local",
+			Port:      9002,
+			PublicKey: "relay-key",
+		},
+		{
+			NodeID:    "123e4567-e89b-12d3-a456-426614174022",
+			NodeType:  "exit",
+			Host:      "exit.local",
+			Port:      9003,
+			PublicKey: "exit-key",
+		},
 	}
 
-	notFoundRecorder := httptest.NewRecorder()
-	notFoundRequest := httptest.NewRequest(http.MethodDelete, "/deregister/"+node.NodeID, nil)
-	mux.ServeHTTP(notFoundRecorder, notFoundRequest)
-
-	assertStatus(t, notFoundRecorder, http.StatusNotFound)
-	decodeResponse(t, notFoundRecorder, &response)
-	if response["error"] != "node not found" {
-		t.Fatalf("error = %q, want %q", response["error"], "node not found")
+	for _, node := range nodes {
+		performJSONRequest(t, mux, http.MethodPost, "/register", node)
 	}
 
-	missingIDRecorder := httptest.NewRecorder()
-	missingIDRequest := httptest.NewRequest(http.MethodDelete, "/deregister/", nil)
-	missingIDRequest.SetPathValue("nodeId", "")
-	server.deregisterHandler(missingIDRecorder, missingIDRequest)
+	server.now = func() time.Time { return baseTime.Add(35 * time.Second) }
+	server.cleanupUnhealthyNodes(server.now())
 
-	assertStatus(t, missingIDRecorder, http.StatusBadRequest)
-	decodeResponse(t, missingIDRecorder, &response)
-	if response["error"] != "nodeId is required" {
-		t.Fatalf("error = %q, want %q", response["error"], "nodeId is required")
+	if len(logs) != 3 {
+		t.Fatalf("len(logs) = %d, want 3", len(logs))
+	}
+
+	debugRecorder := httptest.NewRecorder()
+	debugRequest := httptest.NewRequest(http.MethodGet, "/debug/nodes", nil)
+	mux.ServeHTTP(debugRecorder, debugRequest)
+	assertStatus(t, debugRecorder, http.StatusOK)
+
+	var allNodes []NodeRecord
+	decodeResponse(t, debugRecorder, &allNodes)
+	for _, node := range allNodes {
+		if node.Status != StatusUnhealthy {
+			t.Fatalf("status = %q, want %q", node.Status, StatusUnhealthy)
+		}
+	}
+
+	nodesRecorder := httptest.NewRecorder()
+	nodesRequest := httptest.NewRequest(http.MethodGet, "/nodes", nil)
+	mux.ServeHTTP(nodesRecorder, nodesRequest)
+	assertStatus(t, nodesRecorder, http.StatusOK)
+
+	var healthyNodes []NodeRecord
+	decodeResponse(t, nodesRecorder, &healthyNodes)
+	if len(healthyNodes) != 0 {
+		t.Fatalf("len(healthyNodes) = %d, want 0", len(healthyNodes))
+	}
+
+	circuitRecorder := httptest.NewRecorder()
+	circuitRequest := httptest.NewRequest(http.MethodGet, "/circuit", nil)
+	mux.ServeHTTP(circuitRecorder, circuitRequest)
+	assertStatus(t, circuitRecorder, http.StatusServiceUnavailable)
+
+	server.now = func() time.Time { return baseTime.Add(40 * time.Second) }
+	heartbeatRecorder := httptest.NewRecorder()
+	heartbeatRequest := httptest.NewRequest(http.MethodPost, "/heartbeat/"+nodes[0].NodeID, nil)
+	mux.ServeHTTP(heartbeatRecorder, heartbeatRequest)
+	assertStatus(t, heartbeatRecorder, http.StatusOK)
+
+	nodesRecorder = httptest.NewRecorder()
+	mux.ServeHTTP(nodesRecorder, httptest.NewRequest(http.MethodGet, "/nodes", nil))
+	assertStatus(t, nodesRecorder, http.StatusOK)
+	decodeResponse(t, nodesRecorder, &healthyNodes)
+	if len(healthyNodes) != 1 {
+		t.Fatalf("len(healthyNodes) = %d, want 1", len(healthyNodes))
+	}
+	if healthyNodes[0].NodeID != nodes[0].NodeID {
+		t.Fatalf("nodeId = %q, want %q", healthyNodes[0].NodeID, nodes[0].NodeID)
 	}
 }
 
-func TestNodeRegistryConcurrentUpserts(t *testing.T) {
+func TestHealthMonitorLoopAndTicker(t *testing.T) {
+	baseTime := time.Date(2026, time.March, 26, 12, 0, 0, 0, time.UTC)
+	server := newTestDirectoryServer(baseTime, 5*time.Second, 30*time.Second)
+	server.registry.Upsert(NodeRegistration{
+		NodeID:    "123e4567-e89b-12d3-a456-426614174030",
+		NodeType:  "guard",
+		Host:      "guard.local",
+		Port:      9001,
+		PublicKey: "guard-key",
+	}, baseTime)
+
+	logs := make([]string, 0)
+	server.logf = func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+
+	done := make(chan struct{})
+	ticks := make(chan time.Time)
+
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		server.runHealthMonitor(ctx, ticks)
+		close(done)
+	}()
+
+	<-done
+
+	originalTicker := newTicker
+	defer func() {
+		newTicker = originalTicker
+	}()
+
+	fake := &fakeTicker{ch: make(chan time.Time, 1)}
+	newTicker = func(d time.Duration) ticker {
+		if d != 5*time.Second {
+			t.Fatalf("ticker duration = %s, want %s", d, 5*time.Second)
+		}
+		return fake
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	monitorDone := make(chan struct{})
+
+	go func() {
+		server.StartHealthMonitor(ctx)
+		close(monitorDone)
+	}()
+
+	tickTime := baseTime.Add(31 * time.Second)
+	fake.ch <- tickTime
+	close(fake.ch)
+	<-monitorDone
+
+	if !fake.stopped {
+		t.Fatal("expected fake ticker to be stopped")
+	}
+	if len(logs) != 1 {
+		t.Fatalf("len(logs) = %d, want 1", len(logs))
+	}
+	if logs[0] != "[directory-server] node 123e4567-e89b-12d3-a456-426614174030 transitioned to UNHEALTHY" {
+		t.Fatalf("log = %q, want %q", logs[0], "[directory-server] node 123e4567-e89b-12d3-a456-426614174030 transitioned to UNHEALTHY")
+	}
+}
+
+func TestNodeRegistryAndHelpers(t *testing.T) {
 	registry := NewNodeRegistry()
-	const goroutineCount = 32
+	const goroutineCount = 16
+	now := time.Date(2026, time.March, 26, 12, 0, 0, 0, time.UTC)
 
 	var wg sync.WaitGroup
 	wg.Add(goroutineCount)
@@ -267,61 +485,97 @@ func TestNodeRegistryConcurrentUpserts(t *testing.T) {
 	for i := range goroutineCount {
 		go func(i int) {
 			defer wg.Done()
-			node := NodeRegistration{
+			registry.Upsert(NodeRegistration{
 				NodeID:    "123e4567-e89b-12d3-a456-426614174100",
 				NodeType:  "guard",
 				Host:      "127.0.0.1",
 				Port:      9000 + i,
 				PublicKey: "pub",
-			}
-			registry.Upsert(node)
+			}, now)
 		}(i)
 	}
 
 	wg.Wait()
 
-	nodes := registry.List()
-	if len(nodes) != 1 {
-		t.Fatalf("len(nodes) = %d, want 1", len(nodes))
+	record, ok := registry.Heartbeat("123e4567-e89b-12d3-a456-426614174100", now.Add(5*time.Second))
+	if !ok {
+		t.Fatal("expected heartbeat to succeed")
 	}
-	if nodes[0].NodeID != "123e4567-e89b-12d3-a456-426614174100" {
-		t.Fatalf("nodeId = %q, want %q", nodes[0].NodeID, "123e4567-e89b-12d3-a456-426614174100")
-	}
-
-	emptyRegistry := NewNodeRegistry()
-	if nodes := emptyRegistry.List(); len(nodes) != 0 {
-		t.Fatalf("len(nodes) = %d, want 0", len(nodes))
+	if record.Status != StatusHealthy {
+		t.Fatalf("status = %q, want %q", record.Status, StatusHealthy)
 	}
 
-	sortedRegistry := NewNodeRegistry()
-	sortedRegistry.Upsert(NodeRegistration{
+	if _, ok := registry.Heartbeat("123e4567-e89b-12d3-a456-426614174101", now); ok {
+		t.Fatal("expected heartbeat for missing node to fail")
+	}
+
+	if !registry.Delete("123e4567-e89b-12d3-a456-426614174100") {
+		t.Fatal("expected delete to succeed")
+	}
+	if registry.Delete("123e4567-e89b-12d3-a456-426614174100") {
+		t.Fatal("expected second delete to fail")
+	}
+
+	registry.Upsert(NodeRegistration{
 		NodeID:    "123e4567-e89b-12d3-a456-426614174102",
-		NodeType:  "relay",
+		NodeType:  "guard",
 		Host:      "127.0.0.1",
 		Port:      9102,
 		PublicKey: "pub-2",
-	})
-	sortedRegistry.Upsert(NodeRegistration{
-		NodeID:    "123e4567-e89b-12d3-a456-426614174101",
-		NodeType:  "guard",
+	}, now)
+	registry.Upsert(NodeRegistration{
+		NodeID:    "123e4567-e89b-12d3-a456-426614174103",
+		NodeType:  "relay",
 		Host:      "127.0.0.1",
-		Port:      9101,
-		PublicKey: "pub-1",
-	})
+		Port:      9103,
+		PublicKey: "pub-3",
+	}, now)
 
-	sortedNodes := sortedRegistry.List()
-	if len(sortedNodes) != 2 {
-		t.Fatalf("len(sortedNodes) = %d, want 2", len(sortedNodes))
+	registry.nodes["123e4567-e89b-12d3-a456-426614174103"] = NodeRecord{
+		NodeRegistration: NodeRegistration{
+			NodeID:    "123e4567-e89b-12d3-a456-426614174103",
+			NodeType:  "relay",
+			Host:      "127.0.0.1",
+			Port:      9103,
+			PublicKey: "pub-3",
+		},
+		LastSeen: now.Add(-time.Minute),
+		Status:   StatusUnhealthy,
 	}
-	if sortedNodes[0].NodeID != "123e4567-e89b-12d3-a456-426614174101" {
-		t.Fatalf("first nodeId = %q, want %q", sortedNodes[0].NodeID, "123e4567-e89b-12d3-a456-426614174101")
-	}
-	if sortedNodes[1].NodeID != "123e4567-e89b-12d3-a456-426614174102" {
-		t.Fatalf("second nodeId = %q, want %q", sortedNodes[1].NodeID, "123e4567-e89b-12d3-a456-426614174102")
-	}
-}
 
-func TestHelpersAndRun(t *testing.T) {
+	transitions := registry.MarkUnhealthy(now.Add(10*time.Second), 30*time.Second)
+	if len(transitions) != 0 {
+		t.Fatalf("len(transitions) = %d, want 0", len(transitions))
+	}
+
+	registry.nodes["123e4567-e89b-12d3-a456-426614174102"] = NodeRecord{
+		NodeRegistration: NodeRegistration{
+			NodeID:    "123e4567-e89b-12d3-a456-426614174102",
+			NodeType:  "guard",
+			Host:      "127.0.0.1",
+			Port:      9102,
+			PublicKey: "pub-2",
+		},
+		LastSeen: now.Add(-time.Minute),
+		Status:   StatusHealthy,
+	}
+
+	transitions = registry.MarkUnhealthy(now, 30*time.Second)
+	if len(transitions) != 1 {
+		t.Fatalf("len(transitions) = %d, want 1", len(transitions))
+	}
+	if transitions[0].NodeID != "123e4567-e89b-12d3-a456-426614174102" {
+		t.Fatalf("transition nodeId = %q, want %q", transitions[0].NodeID, "123e4567-e89b-12d3-a456-426614174102")
+	}
+
+	emptyCircuit, ok := registry.BuildCircuit()
+	if ok {
+		t.Fatalf("expected empty circuit to be invalid, got %+v", emptyCircuit)
+	}
+	if !reflect.DeepEqual(emptyCircuit, CircuitResponse{}) {
+		t.Fatalf("emptyCircuit = %+v, want zero value", emptyCircuit)
+	}
+
 	if isValidNodeType("guard") != true || isValidNodeType("relay") != true || isValidNodeType("exit") != true {
 		t.Fatal("expected valid node types to return true")
 	}
@@ -341,6 +595,7 @@ func TestHelpersAndRun(t *testing.T) {
 	if isUUID("123e4567-e89b-12d3-a456-42661417499z") {
 		t.Fatal("expected UUID with invalid hex digit to be invalid")
 	}
+
 	if !isHexDigit('a') || !isHexDigit('F') || !isHexDigit('4') {
 		t.Fatal("expected hex digits to be valid")
 	}
@@ -355,39 +610,82 @@ func TestHelpersAndRun(t *testing.T) {
 	}).String(); got != "127.0.0.1:8080 (guard)" {
 		t.Fatalf("String() = %q, want %q", got, "127.0.0.1:8080 (guard)")
 	}
+}
 
+func TestNewHandlerAndTrimmedDeregister(t *testing.T) {
+	handler := newHandler(&config.NodeConfig{
+		Port:                     "8080",
+		NodeType:                 "directory-server",
+		HeartbeatCleanupInterval: 15 * time.Second,
+		HeartbeatTimeout:         30 * time.Second,
+	})
+
+	node := NodeRegistration{
+		NodeID:    "123e4567-e89b-12d3-a456-426614174200",
+		NodeType:  "guard",
+		Host:      "127.0.0.1",
+		Port:      8080,
+		PublicKey: "pub",
+	}
+
+	performJSONRequest(t, handler, http.MethodPost, "/register", node)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/deregister/"+node.NodeID, nil)
+	req.SetPathValue("nodeId", "  "+node.NodeID+"  ")
+
+	server := newTestDirectoryServer(time.Now(), 15*time.Second, 30*time.Second)
+	server.registry.Upsert(node, time.Now())
+	server.deregisterHandler(recorder, req)
+	assertStatus(t, recorder, http.StatusOK)
+}
+
+func TestRunAndMain(t *testing.T) {
 	cfg := &config.NodeConfig{
-		Port:     "9090",
-		NodeType: "directory-server",
+		Port:                     "9090",
+		NodeType:                 "directory-server",
+		HeartbeatCleanupInterval: 3 * time.Second,
+		HeartbeatTimeout:         9 * time.Second,
 	}
 
 	originalLoadConfig := loadConfig
 	originalStartServer := startServer
+	originalTicker := newTicker
 	defer func() {
 		loadConfig = originalLoadConfig
 		startServer = originalStartServer
+		newTicker = originalTicker
 	}()
 
 	loadCalled := false
 	startCalled := false
+	fake := &fakeTicker{ch: make(chan time.Time, 1)}
 
 	loadConfig = func() *config.NodeConfig {
 		loadCalled = true
 		return cfg
 	}
 
+	newTicker = func(d time.Duration) ticker {
+		if d != cfg.HeartbeatCleanupInterval {
+			t.Fatalf("ticker duration = %s, want %s", d, cfg.HeartbeatCleanupInterval)
+		}
+		return fake
+	}
+
 	startServer = func(s *sharedserver.BaseServer) {
 		startCalled = true
 
 		healthRecorder := httptest.NewRecorder()
-		healthRequest := httptest.NewRequest(http.MethodGet, "/health", nil)
-		s.Mux.ServeHTTP(healthRecorder, healthRequest)
+		s.Mux.ServeHTTP(healthRecorder, httptest.NewRequest(http.MethodGet, "/health", nil))
 		assertStatus(t, healthRecorder, http.StatusOK)
 
-		debugRecorder := httptest.NewRecorder()
-		debugRequest := httptest.NewRequest(http.MethodGet, "/debug/nodes", nil)
-		s.Mux.ServeHTTP(debugRecorder, debugRequest)
-		assertStatus(t, debugRecorder, http.StatusOK)
+		nodesRecorder := httptest.NewRecorder()
+		s.Mux.ServeHTTP(nodesRecorder, httptest.NewRequest(http.MethodGet, "/nodes", nil))
+		assertStatus(t, nodesRecorder, http.StatusOK)
+
+		fake.ch <- time.Date(2026, time.March, 26, 12, 0, 0, 0, time.UTC)
+		close(fake.ch)
 	}
 
 	run()
@@ -397,26 +695,66 @@ func TestHelpersAndRun(t *testing.T) {
 
 	loadCalled = false
 	startCalled = false
+	fake = &fakeTicker{ch: make(chan time.Time, 1)}
+	newTicker = func(time.Duration) ticker { return fake }
+	startServer = func(s *sharedserver.BaseServer) {
+		startCalled = true
+		close(fake.ch)
+	}
+
 	main()
 	if !loadCalled || !startCalled {
 		t.Fatalf("main() loadCalled=%t startCalled=%t, want true/true", loadCalled, startCalled)
 	}
 }
 
+func newTestDirectoryServer(now time.Time, cleanupInterval, heartbeatTimeout time.Duration) *DirectoryServer {
+	server := NewDirectoryServer(nil, cleanupInterval, heartbeatTimeout)
+	server.now = func() time.Time { return now }
+	server.logf = func(string, ...any) {}
+	return server
+}
+
+type fakeTicker struct {
+	ch      chan time.Time
+	stopped bool
+}
+
+func (t *fakeTicker) C() <-chan time.Time {
+	return t.ch
+}
+
+func (t *fakeTicker) Stop() {
+	t.stopped = true
+}
+
 func performJSONRequest(t *testing.T, handler http.Handler, method, path string, payload any) *httptest.ResponseRecorder {
 	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	req := newRequest(t, method, path, payload, "")
+	handler.ServeHTTP(recorder, req)
+
+	return recorder
+}
+
+func newRequest(t *testing.T, method, path string, payload any, rawBody string) *http.Request {
+	t.Helper()
+
+	if rawBody != "" || payload == nil {
+		req := httptest.NewRequest(method, path, bytes.NewReader([]byte(rawBody)))
+		req.Header.Set("Content-Type", "application/json")
+		return req
+	}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
 
-	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	handler.ServeHTTP(recorder, req)
-
-	return recorder
+	return req
 }
 
 func decodeResponse(t *testing.T, recorder *httptest.ResponseRecorder, target any) {

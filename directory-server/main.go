@@ -1,16 +1,24 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rahul-srsh/Torr-BSDS/shared/config"
 	sharedserver "github.com/rahul-srsh/Torr-BSDS/shared/server"
+)
+
+const (
+	StatusHealthy   = "HEALTHY"
+	StatusUnhealthy = "UNHEALTHY"
 )
 
 var (
@@ -18,7 +26,25 @@ var (
 	startServer = func(s *sharedserver.BaseServer) {
 		s.Start()
 	}
+	newTicker = func(d time.Duration) ticker {
+		return realTicker{Ticker: time.NewTicker(d)}
+	}
 )
+
+type ticker interface {
+	C() <-chan time.Time
+	Stop()
+}
+
+type realTicker struct {
+	*time.Ticker
+}
+
+func (t realTicker) C() <-chan time.Time {
+	return t.Ticker.C
+}
+
+type logFunc func(format string, args ...any)
 
 type NodeRegistration struct {
 	NodeID    string `json:"nodeId"`
@@ -28,24 +54,56 @@ type NodeRegistration struct {
 	PublicKey string `json:"publicKey"`
 }
 
+type NodeRecord struct {
+	NodeRegistration
+	LastSeen time.Time `json:"lastSeen"`
+	Status   string    `json:"status"`
+}
+
+type CircuitResponse struct {
+	Guard NodeRecord `json:"guard"`
+	Relay NodeRecord `json:"relay"`
+	Exit  NodeRecord `json:"exit"`
+}
+
 type NodeRegistry struct {
 	mu    sync.RWMutex
-	nodes map[string]NodeRegistration
+	nodes map[string]NodeRecord
 }
 
 func NewNodeRegistry() *NodeRegistry {
 	return &NodeRegistry{
-		nodes: make(map[string]NodeRegistration),
+		nodes: make(map[string]NodeRecord),
 	}
 }
 
-func (r *NodeRegistry) Upsert(node NodeRegistration) NodeRegistration {
+func (r *NodeRegistry) Upsert(node NodeRegistration, now time.Time) NodeRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.nodes[node.NodeID] = node
+	record := NodeRecord{
+		NodeRegistration: node,
+		LastSeen:         now.UTC(),
+		Status:           StatusHealthy,
+	}
 
-	return node
+	r.nodes[node.NodeID] = record
+	return record
+}
+
+func (r *NodeRegistry) Heartbeat(nodeID string, now time.Time) (NodeRecord, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	record, ok := r.nodes[nodeID]
+	if !ok {
+		return NodeRecord{}, false
+	}
+
+	record.LastSeen = now.UTC()
+	record.Status = StatusHealthy
+	r.nodes[nodeID] = record
+	return record, true
 }
 
 func (r *NodeRegistry) Delete(nodeID string) bool {
@@ -60,12 +118,15 @@ func (r *NodeRegistry) Delete(nodeID string) bool {
 	return true
 }
 
-func (r *NodeRegistry) List() []NodeRegistration {
+func (r *NodeRegistry) List(includeUnhealthy bool) []NodeRecord {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	nodes := make([]NodeRegistration, 0, len(r.nodes))
+	nodes := make([]NodeRecord, 0, len(r.nodes))
 	for _, node := range r.nodes {
+		if !includeUnhealthy && node.Status != StatusHealthy {
+			continue
+		}
 		nodes = append(nodes, node)
 	}
 
@@ -76,22 +137,110 @@ func (r *NodeRegistry) List() []NodeRegistration {
 	return nodes
 }
 
-type DirectoryServer struct {
-	registry *NodeRegistry
+func (r *NodeRegistry) BuildCircuit() (CircuitResponse, bool) {
+	healthyNodes := r.List(false)
+	circuit := CircuitResponse{}
+
+	for _, node := range healthyNodes {
+		switch node.NodeType {
+		case "guard":
+			if circuit.Guard.NodeID == "" {
+				circuit.Guard = node
+			}
+		case "relay":
+			if circuit.Relay.NodeID == "" {
+				circuit.Relay = node
+			}
+		case "exit":
+			if circuit.Exit.NodeID == "" {
+				circuit.Exit = node
+			}
+		}
+	}
+
+	return circuit, circuit.Guard.NodeID != "" && circuit.Relay.NodeID != "" && circuit.Exit.NodeID != ""
 }
 
-func NewDirectoryServer(registry *NodeRegistry) *DirectoryServer {
+func (r *NodeRegistry) MarkUnhealthy(now time.Time, timeout time.Duration) []NodeRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	transitions := make([]NodeRecord, 0)
+	for nodeID, node := range r.nodes {
+		if node.Status == StatusUnhealthy {
+			continue
+		}
+		if now.Sub(node.LastSeen) <= timeout {
+			continue
+		}
+
+		node.Status = StatusUnhealthy
+		r.nodes[nodeID] = node
+		transitions = append(transitions, node)
+	}
+
+	sort.Slice(transitions, func(i, j int) bool {
+		return transitions[i].NodeID < transitions[j].NodeID
+	})
+
+	return transitions
+}
+
+type DirectoryServer struct {
+	registry         *NodeRegistry
+	now              func() time.Time
+	logf             logFunc
+	cleanupInterval  time.Duration
+	heartbeatTimeout time.Duration
+}
+
+func NewDirectoryServer(registry *NodeRegistry, cleanupInterval, heartbeatTimeout time.Duration) *DirectoryServer {
 	if registry == nil {
 		registry = NewNodeRegistry()
 	}
 
-	return &DirectoryServer{registry: registry}
+	return &DirectoryServer{
+		registry:         registry,
+		now:              time.Now,
+		logf:             log.Printf,
+		cleanupInterval:  cleanupInterval,
+		heartbeatTimeout: heartbeatTimeout,
+	}
 }
 
 func (s *DirectoryServer) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /register", s.registerHandler)
+	mux.HandleFunc("POST /heartbeat/{nodeId}", s.heartbeatHandler)
 	mux.HandleFunc("DELETE /deregister/{nodeId}", s.deregisterHandler)
+	mux.HandleFunc("GET /nodes", s.nodesHandler)
+	mux.HandleFunc("GET /circuit", s.circuitHandler)
 	mux.HandleFunc("GET /debug/nodes", s.debugNodesHandler)
+}
+
+func (s *DirectoryServer) StartHealthMonitor(ctx context.Context) {
+	t := newTicker(s.cleanupInterval)
+	defer t.Stop()
+	s.runHealthMonitor(ctx, t.C())
+}
+
+func (s *DirectoryServer) runHealthMonitor(ctx context.Context, ticks <-chan time.Time) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case tickTime, ok := <-ticks:
+			if !ok {
+				return
+			}
+			s.cleanupUnhealthyNodes(tickTime)
+		}
+	}
+}
+
+func (s *DirectoryServer) cleanupUnhealthyNodes(now time.Time) {
+	for _, node := range s.registry.MarkUnhealthy(now.UTC(), s.heartbeatTimeout) {
+		s.logf("[directory-server] node %s transitioned to %s", node.NodeID, StatusUnhealthy)
+	}
 }
 
 func (s *DirectoryServer) registerHandler(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +263,23 @@ func (s *DirectoryServer) registerHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, s.registry.Upsert(payload))
+	writeJSON(w, http.StatusCreated, s.registry.Upsert(payload, s.now()))
+}
+
+func (s *DirectoryServer) heartbeatHandler(w http.ResponseWriter, r *http.Request) {
+	nodeID := strings.TrimSpace(r.PathValue("nodeId"))
+	if nodeID == "" {
+		writeJSONError(w, http.StatusBadRequest, "nodeId is required")
+		return
+	}
+
+	record, ok := s.registry.Heartbeat(nodeID, s.now())
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "node not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, record)
 }
 
 func (s *DirectoryServer) deregisterHandler(w http.ResponseWriter, r *http.Request) {
@@ -135,8 +300,22 @@ func (s *DirectoryServer) deregisterHandler(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+func (s *DirectoryServer) nodesHandler(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.registry.List(false))
+}
+
+func (s *DirectoryServer) circuitHandler(w http.ResponseWriter, _ *http.Request) {
+	circuit, ok := s.registry.BuildCircuit()
+	if !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, "not enough healthy nodes to build a circuit")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, circuit)
+}
+
 func (s *DirectoryServer) debugNodesHandler(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.registry.List())
+	writeJSON(w, http.StatusOK, s.registry.List(true))
 }
 
 func validateNodeRegistration(node NodeRegistration) error {
@@ -208,7 +387,7 @@ func writeJSONError(w http.ResponseWriter, status int, message string) {
 
 func newHandler(cfg *config.NodeConfig) http.Handler {
 	base := sharedserver.New(cfg)
-	directoryServer := NewDirectoryServer(nil)
+	directoryServer := NewDirectoryServer(nil, cfg.HeartbeatCleanupInterval, cfg.HeartbeatTimeout)
 	directoryServer.RegisterRoutes(base.Mux)
 	return base.Mux
 }
@@ -216,8 +395,9 @@ func newHandler(cfg *config.NodeConfig) http.Handler {
 func run() {
 	cfg := loadConfig()
 	base := sharedserver.New(cfg)
-	directoryServer := NewDirectoryServer(nil)
+	directoryServer := NewDirectoryServer(nil, cfg.HeartbeatCleanupInterval, cfg.HeartbeatTimeout)
 	directoryServer.RegisterRoutes(base.Mux)
+	go directoryServer.StartHealthMonitor(context.Background())
 	startServer(base)
 }
 
