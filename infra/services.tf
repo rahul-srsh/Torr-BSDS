@@ -102,13 +102,13 @@ resource "aws_ecs_service" "services" {
   deployment_maximum_percent         = 200
 
   network_configuration {
-    subnets = each.key == "directory-server" ? [
+    subnets = each.value.public ? [
       aws_subnet.public_az1.id, aws_subnet.public_az2.id
-    ] : [
+      ] : [
       aws_subnet.private_az1.id, aws_subnet.private_az2.id
     ]
     security_groups  = [aws_security_group.services.id]
-    assign_public_ip = each.key == "directory-server" ? true : false
+    assign_public_ip = each.value.public
   }
 
   depends_on = [

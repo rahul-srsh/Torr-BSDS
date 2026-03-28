@@ -16,15 +16,23 @@ locals {
   service_definitions = {
     directory-server = {
       desired_count = 1
+      public        = true
     }
     guard-node = {
       desired_count = 1
+      public        = false
     }
     relay-node = {
       desired_count = 2
+      public        = false
     }
     exit-node = {
       desired_count = 1
+      public        = false
+    }
+    echo-server = {
+      desired_count = 1
+      public        = true
     }
   }
 
