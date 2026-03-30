@@ -47,7 +47,7 @@ resource "aws_ecs_task_definition" "services" {
       name      = each.key
       image     = "${aws_ecr_repository.services[each.key].repository_url}:latest"
       essential = true
-      environment = [
+      environment = concat([
         {
           name  = "NODE_TYPE"
           value = each.key
@@ -64,7 +64,12 @@ resource "aws_ecs_task_definition" "services" {
           name  = "EXPERIMENT_RESULTS_BUCKET"
           value = aws_s3_bucket.experiment_results.bucket
         },
-      ]
+      ], each.key == "guard-node" ? [
+        {
+          name  = "FORWARD_TARGET_URL"
+          value = "http://10.0.1.130:8080"
+        },
+      ] : [])
       portMappings = [
         {
           containerPort = 8080

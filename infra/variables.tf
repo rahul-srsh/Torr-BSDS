@@ -20,7 +20,7 @@ locals {
     }
     guard-node = {
       desired_count = 1
-      public        = false
+      public        = true
     }
     relay-node = {
       desired_count = 2
