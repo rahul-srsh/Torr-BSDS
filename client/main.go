@@ -1,11 +1,7 @@
 package main
 
-import "fmt"
+import "log"
 
 func main() {
-	fmt.Println("TODO: implement")
-}
-
-func Hello() string {
-	return "hello"
+	log.Println("[client] full circuit setup implemented in Task 6 (key exchange)")
 }
