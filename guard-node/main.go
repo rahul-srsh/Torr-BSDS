@@ -20,6 +20,11 @@ func main() {
 	targetURL := strings.TrimRight(os.Getenv("FORWARD_TARGET_URL"), "/")
 	srv.Mux.HandleFunc("/forward/echo", forwardEchoHandler(targetURL, httpClient))
 
+	keys := newKeyStore()
+	onion := newOnionHandler(keys, httpClient)
+	srv.Mux.HandleFunc("/key", onion.handleKey)
+	srv.Mux.HandleFunc("/onion", onion.handleOnion)
+
 	srv.Start()
 }
 
