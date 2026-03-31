@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rahul-srsh/Torr-BSDS/shared/config"
+	onion "github.com/rahul-srsh/Torr-BSDS/shared/onion"
 	sharedserver "github.com/rahul-srsh/Torr-BSDS/shared/server"
 )
 
@@ -20,10 +21,10 @@ func main() {
 	targetURL := strings.TrimRight(os.Getenv("FORWARD_TARGET_URL"), "/")
 	srv.Mux.HandleFunc("/forward/echo", forwardEchoHandler(targetURL, httpClient))
 
-	keys := newKeyStore()
-	onion := newOnionHandler(keys, httpClient)
-	srv.Mux.HandleFunc("/key", onion.handleKey)
-	srv.Mux.HandleFunc("/onion", onion.handleOnion)
+	keys := onion.NewKeyStore()
+	h := onion.NewHandler(keys, httpClient, "guard")
+	srv.Mux.HandleFunc("/key", h.HandleKey)
+	srv.Mux.HandleFunc("/onion", h.HandleOnion)
 
 	srv.Start()
 }
