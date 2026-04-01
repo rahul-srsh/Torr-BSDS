@@ -2,10 +2,16 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +25,18 @@ func nodeServer(t *testing.T, keyHandler, onionHandler http.HandlerFunc) *httpte
 	mux := http.NewServeMux()
 	mux.HandleFunc("/key", keyHandler)
 	mux.HandleFunc("/onion", onionHandler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// nodeServerFull spins up a node server with /key, /onion, and /setup handlers.
+func nodeServerFull(t *testing.T, keyHandler, onionHandler, setupHandler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/key", keyHandler)
+	mux.HandleFunc("/onion", onionHandler)
+	mux.HandleFunc("/setup", setupHandler)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
@@ -367,5 +385,135 @@ func randomIntegrationKey(t *testing.T) []byte {
 		t.Fatalf("rand.Read: %v", err)
 	}
 	return key
+}
+
+// genIntegrationKeyPair generates a fresh RSA-2048 key pair for integration tests.
+func genIntegrationKeyPair(t *testing.T) (*rsa.PrivateKey, string) {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	pubBytes, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey: %v", err)
+	}
+	pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubBytes}))
+	return priv, pubPEM
+}
+
+// nodeRecordForSrv builds a NodeRecord for an httptest.Server, used in the mock directory.
+func nodeRecordForSrv(t *testing.T, id, nodeType string, srv *httptest.Server, pubPEM string) NodeRecord {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	port, _ := strconv.Atoi(u.Port())
+	return NodeRecord{NodeRegistration: NodeRegistration{
+		NodeID: id, NodeType: nodeType, Host: u.Hostname(), Port: port, PublicKey: pubPEM,
+	}}
+}
+
+// TestSetupCircuitIntegration verifies the full key exchange flow:
+//  1. Client calls GET /circuit on a mock directory server.
+//  2. Client calls SetupCircuit — each node receives its RSA-OAEP-encrypted session key.
+//  3. The stored keys are used to complete a full 3-hop onion round-trip.
+func TestSetupCircuitIntegration(t *testing.T) {
+	const circuitID = "setup-integration-1"
+	const destBody = `{"from":"destination"}`
+
+	// Generate key pairs for each node.
+	guardPriv, guardPubPEM := genIntegrationKeyPair(t)
+	relayPriv, relayPubPEM := genIntegrationKeyPair(t)
+	exitPriv, exitPubPEM := genIntegrationKeyPair(t)
+
+	// ── Node servers ─────────────────────────────────────────────────────────
+	exitKS := onion.NewKeyStore()
+	exitH := onion.NewExitHandler(exitKS, http.DefaultClient)
+	exitSrv := nodeServerFull(t, exitH.HandleKey, exitH.HandleOnion, onion.HandleSetup(exitKS, exitPriv))
+
+	relayKS := onion.NewKeyStore()
+	relayH := onion.NewHandler(relayKS, http.DefaultClient, "relay")
+	relaySrv := nodeServerFull(t, relayH.HandleKey, relayH.HandleOnion, onion.HandleSetup(relayKS, relayPriv))
+
+	guardKS := onion.NewKeyStore()
+	guardH := onion.NewHandler(guardKS, http.DefaultClient, "guard")
+	guardSrv := nodeServerFull(t, guardH.HandleKey, guardH.HandleOnion, onion.HandleSetup(guardKS, guardPriv))
+
+	// ── Mock directory server ─────────────────────────────────────────────────
+	circuit := CircuitResponse{
+		Guard: nodeRecordForSrv(t, "g1", "guard", guardSrv, guardPubPEM),
+		Relay: nodeRecordForSrv(t, "r1", "relay", relaySrv, relayPubPEM),
+		Exit:  nodeRecordForSrv(t, "e1", "exit", exitSrv, exitPubPEM),
+	}
+	dirSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/circuit" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(circuit)
+	}))
+	t.Cleanup(dirSrv.Close)
+
+	// ── Destination ───────────────────────────────────────────────────────────
+	dest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(destBody))
+	}))
+	t.Cleanup(dest.Close)
+
+	// ── Step 1: Get circuit from directory ────────────────────────────────────
+	got, err := GetCircuit(http.DefaultClient, dirSrv.URL)
+	if err != nil {
+		t.Fatalf("GetCircuit: %v", err)
+	}
+
+	// ── Step 2: Key exchange via /setup ───────────────────────────────────────
+	gKey, rKey, eKey, err := SetupCircuit(http.DefaultClient, circuitID, got)
+	if err != nil {
+		t.Fatalf("SetupCircuit: %v", err)
+	}
+
+	// Verify all three nodes received their keys.
+	if _, ok := guardKS.Get(circuitID); !ok {
+		t.Fatal("guard node did not receive session key")
+	}
+	if _, ok := relayKS.Get(circuitID); !ok {
+		t.Fatal("relay node did not receive session key")
+	}
+	if _, ok := exitKS.Get(circuitID); !ok {
+		t.Fatal("exit node did not receive session key")
+	}
+
+	// ── Step 3: Full round-trip using the exchanged keys ──────────────────────
+	guardCT, err := BuildOnion(gKey, rKey, eKey,
+		onion.ExitLayer{URL: dest.URL, Method: http.MethodGet},
+		addr(relaySrv), addr(exitSrv),
+	)
+	if err != nil {
+		t.Fatalf("BuildOnion: %v", err)
+	}
+
+	start := time.Now()
+	onionResp, err := SendOnion(http.DefaultClient, guardSrv.URL, circuitID, guardCT)
+	log.Printf("[client] setup-integration round-trip latency: %s", time.Since(start))
+	if err != nil {
+		t.Fatalf("SendOnion: %v", err)
+	}
+
+	raw, _ := base64.StdEncoding.DecodeString(onionResp.Payload)
+	exitResp, err := DecryptResponse(gKey, rKey, eKey, raw)
+	if err != nil {
+		t.Fatalf("DecryptResponse: %v", err)
+	}
+	if exitResp.StatusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want 200", exitResp.StatusCode)
+	}
+	body, _ := base64.StdEncoding.DecodeString(exitResp.Body)
+	if string(body) != destBody {
+		t.Fatalf("body = %q, want %q", body, destBody)
+	}
 }
 

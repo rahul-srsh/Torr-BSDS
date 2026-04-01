@@ -2,13 +2,111 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	onion "github.com/rahul-srsh/Torr-BSDS/shared/onion"
 )
+
+// NodeRegistration mirrors the directory server's registration payload.
+type NodeRegistration struct {
+	NodeID    string `json:"nodeId"`
+	NodeType  string `json:"nodeType"`
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	PublicKey string `json:"publicKey"`
+}
+
+// NodeRecord mirrors the directory server's node record (NodeRegistration + metadata).
+type NodeRecord struct {
+	NodeRegistration
+	LastSeen time.Time `json:"lastSeen"`
+	Status   string    `json:"status"`
+}
+
+// CircuitResponse mirrors the directory server's GET /circuit response.
+type CircuitResponse struct {
+	Guard NodeRecord `json:"guard"`
+	Relay NodeRecord `json:"relay"`
+	Exit  NodeRecord `json:"exit"`
+}
+
+// GetCircuit calls the directory server's GET /circuit endpoint and returns the circuit.
+func GetCircuit(client *http.Client, directoryURL string) (*CircuitResponse, error) {
+	resp, err := client.Get(directoryURL + "/circuit")
+	if err != nil {
+		return nil, fmt.Errorf("GET /circuit: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET /circuit returned %d", resp.StatusCode)
+	}
+	var circuit CircuitResponse
+	if err := json.NewDecoder(resp.Body).Decode(&circuit); err != nil {
+		return nil, fmt.Errorf("decode circuit response: %w", err)
+	}
+	return &circuit, nil
+}
+
+// SetupCircuit generates a fresh 32-byte AES-256 session key for each hop, RSA-OAEP
+// encrypts it with the node's public key, and POST /setup to each node in the circuit.
+// Returns (guardKey, relayKey, exitKey) for use with BuildOnion and DecryptResponse.
+func SetupCircuit(client *http.Client, circuitID string, circuit *CircuitResponse) (guardKey, relayKey, exitKey []byte, err error) {
+	guardKey, relayKey, exitKey = make([]byte, 32), make([]byte, 32), make([]byte, 32)
+	for _, k := range [][]byte{guardKey, relayKey, exitKey} {
+		if _, err = rand.Read(k); err != nil {
+			return nil, nil, nil, fmt.Errorf("generate session key: %w", err)
+		}
+	}
+
+	for _, tc := range []struct {
+		node NodeRecord
+		key  []byte
+	}{
+		{circuit.Guard, guardKey},
+		{circuit.Relay, relayKey},
+		{circuit.Exit, exitKey},
+	} {
+		pub, parseErr := onion.ParsePublicKey(tc.node.PublicKey)
+		if parseErr != nil {
+			return nil, nil, nil, fmt.Errorf("parse public key for node %s: %w", tc.node.NodeID, parseErr)
+		}
+		nodeURL := fmt.Sprintf("http://%s:%d", tc.node.Host, tc.node.Port)
+		if sendErr := sendSetupKey(client, nodeURL, circuitID, pub, tc.key); sendErr != nil {
+			return nil, nil, nil, fmt.Errorf("setup key for node %s: %w", tc.node.NodeID, sendErr)
+		}
+	}
+	return guardKey, relayKey, exitKey, nil
+}
+
+// sendSetupKey RSA-OAEP encrypts key with pub and POSTs it to nodeURL/setup.
+func sendSetupKey(client *http.Client, nodeURL, circuitID string, pub *rsa.PublicKey, key []byte) error {
+	ct, err := onion.EncryptKey(pub, key)
+	if err != nil {
+		return fmt.Errorf("encrypt key: %w", err)
+	}
+	body, err := json.Marshal(onion.KeySetupRequest{
+		CircuitID:    circuitID,
+		EncryptedKey: base64.StdEncoding.EncodeToString(ct),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal setup request: %w", err)
+	}
+	resp, err := client.Post(nodeURL+"/setup", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("POST /setup to %s: %w", nodeURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("POST /setup to %s returned %d", nodeURL, resp.StatusCode)
+	}
+	return nil
+}
 
 // BuildOnion constructs a 3-layer onion-encrypted payload for a circuit.
 //

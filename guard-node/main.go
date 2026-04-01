@@ -58,6 +58,7 @@ func main() {
 	h := onion.NewHandler(keys, httpClient, "guard")
 	srv.Mux.HandleFunc("/key", h.HandleKey)
 	srv.Mux.HandleFunc("/onion", h.HandleOnion)
+	srv.Mux.HandleFunc("/setup", onion.HandleSetup(keys, privKey))
 
 	srv.Start()
 }

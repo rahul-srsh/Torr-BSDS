@@ -52,6 +52,7 @@ func main() {
 	h := onion.NewExitHandler(keys, httpClient)
 	srv.Mux.HandleFunc("/key", h.HandleKey)
 	srv.Mux.HandleFunc("/onion", h.HandleOnion)
+	srv.Mux.HandleFunc("/setup", onion.HandleSetup(keys, privKey))
 
 	srv.Start()
 }
