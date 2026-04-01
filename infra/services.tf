@@ -42,6 +42,11 @@ resource "aws_ecs_task_definition" "services" {
   task_role_arn            = data.aws_iam_role.lab_role.arn
   execution_role_arn       = data.aws_iam_role.lab_role.arn
 
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
   container_definitions = jsonencode([
     {
       name      = each.key
@@ -50,21 +55,22 @@ resource "aws_ecs_task_definition" "services" {
       environment = concat([
         {
           name  = "NODE_TYPE"
-          value = each.key
+          value = each.value.node_type
         },
         {
           name  = "PORT"
           value = "8080"
         },
         {
-          name  = "DIRECTORY_SERVER_URL"
-          value = "http://directory-server.hopvault.local:8080"
-        },
-        {
           name  = "EXPERIMENT_RESULTS_BUCKET"
           value = aws_s3_bucket.experiment_results.bucket
         },
-      ], each.key == "guard-node" ? [
+      ], contains(["guard-node", "relay-node", "exit-node", "echo-server"], each.key) ? [
+        {
+          name  = "DIRECTORY_SERVER_URL"
+          value = var.directory_server_url
+        },
+      ] : [], each.key == "guard-node" ? [
         {
           name  = "FORWARD_TARGET_URL"
           value = "http://10.0.1.130:8080"

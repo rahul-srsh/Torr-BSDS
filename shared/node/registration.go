@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -80,10 +81,15 @@ type ecsTaskMeta struct {
 	} `json:"Containers"`
 }
 
-// ResolveOwnAddress attempts to discover the node's routable IP address.
-// It first tries the ECS task metadata endpoint (v4, then v3), then falls
-// back to os.Hostname().
+// ResolveOwnAddress attempts to discover the node's publicly routable IP address.
+// It first queries checkip.amazonaws.com to get the public IP (works for Fargate
+// tasks in public subnets with assign_public_ip=true), then falls back to the
+// ECS task metadata private IP, then os.Hostname().
 func ResolveOwnAddress(client *http.Client) (string, error) {
+	// Try public IP first so clients outside the VPC can reach this node.
+	if ip, err := publicIPFromCheckIP(client); err == nil && ip != "" {
+		return ip, nil
+	}
 	for _, envVar := range []string{"ECS_CONTAINER_METADATA_URI_V4", "ECS_CONTAINER_METADATA_URI"} {
 		uri := os.Getenv(envVar)
 		if uri == "" {
@@ -101,6 +107,31 @@ func ResolveOwnAddress(client *http.Client) (string, error) {
 		return "", fmt.Errorf("hostname: %w", err)
 	}
 	return hostname, nil
+}
+
+// publicIPFromCheckIP queries checkip.amazonaws.com and returns the public IP
+// of the caller. Returns an error if the request fails or times out.
+func publicIPFromCheckIP(client *http.Client) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://checkip.amazonaws.com", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	ip := strings.TrimSpace(string(body))
+	if ip == "" {
+		return "", fmt.Errorf("empty response from checkip")
+	}
+	return ip, nil
 }
 
 func ipFromECSMetadata(client *http.Client, url string) (string, error) {

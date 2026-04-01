@@ -1,3 +1,9 @@
+variable "directory_server_url" {
+  description = "URL of the directory server used by nodes for self-registration. Set after phase-1 deploy once the directory server's public IP is known."
+  type        = string
+  default     = "http://localhost:8080"
+}
+
 data "aws_caller_identity" "current" {}
 
 data "aws_region" "current" {}
@@ -14,26 +20,11 @@ locals {
   name_prefix = "hopvault"
 
   service_definitions = {
-    directory-server = {
-      desired_count = 1
-      public        = true
-    }
-    guard-node = {
-      desired_count = 1
-      public        = true
-    }
-    relay-node = {
-      desired_count = 2
-      public        = false
-    }
-    exit-node = {
-      desired_count = 1
-      public        = false
-    }
-    echo-server = {
-      desired_count = 1
-      public        = true
-    }
+    directory-server = { desired_count = 1, public = true, node_type = "directory-server" }
+    guard-node       = { desired_count = 1, public = true, node_type = "guard" }
+    relay-node       = { desired_count = 2, public = true, node_type = "relay" }
+    exit-node        = { desired_count = 1, public = true, node_type = "exit" }
+    echo-server      = { desired_count = 1, public = true, node_type = "echo-server" }
   }
 
   service_names = keys(local.service_definitions)

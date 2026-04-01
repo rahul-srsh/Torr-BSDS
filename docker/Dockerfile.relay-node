@@ -1,0 +1,33 @@
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /workspace
+
+COPY shared/go.mod shared/go.mod
+COPY relay-node/go.mod relay-node/go.mod
+
+WORKDIR /workspace/relay-node
+RUN go mod download
+
+WORKDIR /workspace
+COPY shared/ shared/
+COPY relay-node/ relay-node/
+
+WORKDIR /workspace/relay-node
+RUN CGO_ENABLED=0 GOOS=linux go build -o /relay-node .
+
+FROM alpine:3.19
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+COPY --from=builder /relay-node .
+
+ENV PORT=8080
+ENV NODE_TYPE=relay-node
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -qO- http://localhost:8080/health || exit 1
+
+ENTRYPOINT ["./relay-node"]

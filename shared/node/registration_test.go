@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -360,7 +361,23 @@ func TestResolveOwnAddressUsesECSMetadata(t *testing.T) {
 
 	t.Setenv("ECS_CONTAINER_METADATA_URI_V4", meta.URL)
 
-	addr, err := ResolveOwnAddress(http.DefaultClient)
+	// Use a client that cannot reach the internet so checkip.amazonaws.com fails
+	// and the function falls back to ECS metadata.
+	noInternetClient := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				// Only allow connections to localhost (test servers).
+				host, _, _ := net.SplitHostPort(addr)
+				if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+					return (&net.Dialer{}).DialContext(ctx, network, addr)
+				}
+				return nil, fmt.Errorf("blocked: no internet in test")
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	addr, err := ResolveOwnAddress(noInternetClient)
 	if err != nil {
 		t.Fatalf("ResolveOwnAddress: %v", err)
 	}
