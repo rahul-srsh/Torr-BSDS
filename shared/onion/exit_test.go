@@ -92,10 +92,10 @@ func TestExitHandleOnionWithBody(t *testing.T) {
 
 	reqBody := []byte(`{"hello":"world"}`)
 	layer := ExitLayer{
-		URL:    dest.URL,
-		Method: http.MethodPost,
+		URL:     dest.URL,
+		Method:  http.MethodPost,
 		Headers: map[string]string{"Content-Type": "application/json"},
-		Body:   reqBody,
+		Body:    reqBody,
 	}
 	layerJSON, _ := json.Marshal(layer)
 	ct, _ := Encrypt(key, layerJSON)

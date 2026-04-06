@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -24,6 +26,25 @@ type ExitResponse struct {
 	StatusCode int               `json:"statusCode"`
 	Headers    map[string]string `json:"headers,omitempty"`
 	Body       []byte            `json:"body,omitempty"` // plaintext response body
+}
+
+// UnwrapExitLayer decrypts the innermost onion layer with AES-256-GCM and
+// decodes the plaintext HTTP request that the exit node must execute.
+func UnwrapExitLayer(key, ciphertext []byte) (*ExitLayer, error) {
+	plaintext, err := Decrypt(key, ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt exit layer: %w", err)
+	}
+
+	var layer ExitLayer
+	if err := json.Unmarshal(plaintext, &layer); err != nil {
+		return nil, fmt.Errorf("decode exit layer: %w", err)
+	}
+	if layer.URL == "" || layer.Method == "" {
+		return nil, errors.New("exit layer must include url and method")
+	}
+
+	return &layer, nil
 }
 
 // ExitHandler provides POST /key and POST /onion for the exit node.
@@ -96,21 +117,10 @@ func (h *ExitHandler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plaintext, err := Decrypt(key, req.Payload)
+	layer, err := UnwrapExitLayer(key, req.Payload)
 	if err != nil {
 		log.Printf("[exit] decryption failed for circuit %s: %v", req.CircuitID, err)
 		http.Error(w, "decryption failed", http.StatusBadRequest)
-		return
-	}
-
-	var layer ExitLayer
-	if err := json.Unmarshal(plaintext, &layer); err != nil {
-		log.Printf("[exit] invalid exit layer for circuit %s: %v", req.CircuitID, err)
-		http.Error(w, "invalid exit layer format", http.StatusBadRequest)
-		return
-	}
-	if layer.URL == "" || layer.Method == "" {
-		http.Error(w, "exit layer must include url and method", http.StatusBadRequest)
 		return
 	}
 

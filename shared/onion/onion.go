@@ -105,6 +105,25 @@ func Decrypt(key, ciphertext []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
+// UnwrapLayer decrypts one onion hop with AES-256-GCM and decodes the next-hop
+// routing metadata plus the still-encrypted inner payload.
+func UnwrapLayer(key, ciphertext []byte) (*Layer, error) {
+	plaintext, err := Decrypt(key, ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt onion layer: %w", err)
+	}
+
+	var layer Layer
+	if err := json.Unmarshal(plaintext, &layer); err != nil {
+		return nil, fmt.Errorf("decode onion layer: %w", err)
+	}
+	if layer.NextHop == "" || len(layer.Payload) == 0 {
+		return nil, errors.New("layer must include nextHop and payload")
+	}
+
+	return &layer, nil
+}
+
 // Handler provides POST /key and POST /onion endpoints for any onion routing node.
 type Handler struct {
 	Keys      *KeyStore
@@ -177,17 +196,10 @@ func (h *Handler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plaintext, err := Decrypt(key, req.Payload)
+	layer, err := UnwrapLayer(key, req.Payload)
 	if err != nil {
 		log.Printf("[%s] decryption failed for circuit %s from %s: %v", h.NodeLabel, req.CircuitID, prevHop, err)
 		http.Error(w, "decryption failed", http.StatusBadRequest)
-		return
-	}
-
-	var layer Layer
-	if err := json.Unmarshal(plaintext, &layer); err != nil {
-		log.Printf("[%s] invalid layer format from %s: %v", h.NodeLabel, prevHop, err)
-		http.Error(w, "invalid layer format", http.StatusBadRequest)
 		return
 	}
 

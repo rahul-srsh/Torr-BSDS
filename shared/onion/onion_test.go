@@ -62,6 +62,104 @@ func TestDecryptInvalidKeyLength(t *testing.T) {
 	}
 }
 
+func TestSequentialUnwrapThreeLayers(t *testing.T) {
+	guardKey := randomKey(t)
+	relayKey := randomKey(t)
+	exitKey := randomKey(t)
+
+	relayAddr := "10.0.0.2:8082"
+	exitAddr := "10.0.0.3:8083"
+	original := ExitLayer{
+		URL:     "https://example.com/api",
+		Method:  http.MethodPost,
+		Headers: map[string]string{"Content-Type": "application/json"},
+		Body:    []byte(`{"hello":"world"}`),
+	}
+
+	exitPlain, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal exit layer: %v", err)
+	}
+	exitCiphertext, err := Encrypt(exitKey, exitPlain)
+	if err != nil {
+		t.Fatalf("encrypt exit layer: %v", err)
+	}
+
+	relayPlain, err := json.Marshal(Layer{NextHop: exitAddr, Payload: exitCiphertext})
+	if err != nil {
+		t.Fatalf("marshal relay layer: %v", err)
+	}
+	relayCiphertext, err := Encrypt(relayKey, relayPlain)
+	if err != nil {
+		t.Fatalf("encrypt relay layer: %v", err)
+	}
+
+	guardPlain, err := json.Marshal(Layer{NextHop: relayAddr, Payload: relayCiphertext})
+	if err != nil {
+		t.Fatalf("marshal guard layer: %v", err)
+	}
+	guardCiphertext, err := Encrypt(guardKey, guardPlain)
+	if err != nil {
+		t.Fatalf("encrypt guard layer: %v", err)
+	}
+
+	guardLayer, err := UnwrapLayer(guardKey, guardCiphertext)
+	if err != nil {
+		t.Fatalf("unwrap guard layer: %v", err)
+	}
+	if guardLayer.NextHop != relayAddr {
+		t.Fatalf("guard nextHop = %q, want %q", guardLayer.NextHop, relayAddr)
+	}
+
+	relayLayer, err := UnwrapLayer(relayKey, guardLayer.Payload)
+	if err != nil {
+		t.Fatalf("unwrap relay layer: %v", err)
+	}
+	if relayLayer.NextHop != exitAddr {
+		t.Fatalf("relay nextHop = %q, want %q", relayLayer.NextHop, exitAddr)
+	}
+
+	exitLayer, err := UnwrapExitLayer(exitKey, relayLayer.Payload)
+	if err != nil {
+		t.Fatalf("unwrap exit layer: %v", err)
+	}
+	if exitLayer.URL != original.URL {
+		t.Fatalf("exit URL = %q, want %q", exitLayer.URL, original.URL)
+	}
+	if exitLayer.Method != original.Method {
+		t.Fatalf("exit method = %q, want %q", exitLayer.Method, original.Method)
+	}
+	if !bytes.Equal(exitLayer.Body, original.Body) {
+		t.Fatalf("exit body = %q, want %q", exitLayer.Body, original.Body)
+	}
+}
+
+func TestUnwrapLayerTamperedPayloadFailsAuth(t *testing.T) {
+	key := randomKey(t)
+
+	layerPlain, err := json.Marshal(Layer{
+		NextHop: "10.0.0.2:8082",
+		Payload: []byte("still encrypted"),
+	})
+	if err != nil {
+		t.Fatalf("marshal layer: %v", err)
+	}
+	ciphertext, err := Encrypt(key, layerPlain)
+	if err != nil {
+		t.Fatalf("encrypt layer: %v", err)
+	}
+
+	ciphertext[len(ciphertext)-1] ^= 0xFF
+
+	_, err = UnwrapLayer(key, ciphertext)
+	if err == nil {
+		t.Fatal("expected tampered payload to fail authentication")
+	}
+	if !strings.Contains(err.Error(), "decrypt onion layer") {
+		t.Fatalf("error = %q, want decrypt onion layer context", err)
+	}
+}
+
 // ---- KeyStore ----
 
 func TestKeyStoreStoreAndGet(t *testing.T) {
@@ -160,7 +258,7 @@ func TestHandleKeyMissingFields(t *testing.T) {
 	h := NewHandler(NewKeyStore(), http.DefaultClient, "test")
 	cases := []KeyRequest{
 		{Key: base64.StdEncoding.EncodeToString(randomKey(t))}, // missing circuitId
-		{CircuitID: "c1"},                                       // missing key
+		{CircuitID: "c1"}, // missing key
 	}
 	for _, req := range cases {
 		body, _ := json.Marshal(req)
@@ -213,12 +311,12 @@ func TestHandleOnionSuccess(t *testing.T) {
 		json.NewDecoder(r.Body).Decode(&req)
 		if req.CircuitID != "test-circuit" {
 			t.Errorf("circuitId = %q, want test-circuit", req.CircuitID)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(OnionResponse{
-				Payload: exitEncryptedBytes,
-			})
-		}))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(OnionResponse{
+			Payload: exitEncryptedBytes,
+		})
+	}))
 	defer nextHop.Close()
 
 	nextAddr := strings.TrimPrefix(nextHop.URL, "http://")
