@@ -19,6 +19,7 @@ jobs:
           - relay-node
           - exit-node
           - client
+          - echo-server
 
     steps:
       - uses: actions/checkout@v4
@@ -34,4 +35,4 @@ jobs:
 
       - name: Test
         working-directory: ${{ matrix.module }}
-        run: go test -v ./...
+        run: go test -cover -v ./...
