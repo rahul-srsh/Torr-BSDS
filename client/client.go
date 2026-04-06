@@ -7,7 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	onion "github.com/rahul-srsh/Torr-BSDS/shared/onion"
@@ -36,6 +38,48 @@ type CircuitResponse struct {
 	Exit  NodeRecord `json:"exit"`
 }
 
+// ExecuteRequest runs the full 3-hop client flow against the onion network.
+func ExecuteRequest(client *http.Client, directoryURL, circuitID string, exitLayer onion.ExitLayer) (*onion.ExitResponse, error) {
+	return ExecuteRequestWithHops(client, directoryURL, circuitID, exitLayer, 3)
+}
+
+// ExecuteRequestWithHops runs the full client flow for the requested hop count:
+// circuit lookup, key exchange, onion wrapping, send via guard, and response unwrap.
+func ExecuteRequestWithHops(client *http.Client, directoryURL, circuitID string, exitLayer onion.ExitLayer, hops int) (*onion.ExitResponse, error) {
+	if err := validateHops(hops); err != nil {
+		return nil, err
+	}
+
+	circuit, err := GetCircuitWithHops(client, directoryURL, hops)
+	if err != nil {
+		return nil, fmt.Errorf("get circuit from directory server: %w", err)
+	}
+
+	guardKey, relayKey, exitKey, err := SetupCircuitWithHops(client, circuitID, circuit, hops)
+	if err != nil {
+		return nil, fmt.Errorf("establish session keys: %w", err)
+	}
+
+	relayAddr, exitAddr := circuitHopAddresses(circuit, hops)
+	payload, err := BuildOnionWithHops(guardKey, relayKey, exitKey, exitLayer, relayAddr, exitAddr, hops)
+	if err != nil {
+		return nil, fmt.Errorf("build onion payload: %w", err)
+	}
+
+	guardURL := fmt.Sprintf("http://%s:%d", circuit.Guard.Host, circuit.Guard.Port)
+	onionResp, err := SendOnion(client, guardURL, circuitID, payload)
+	if err != nil {
+		return nil, fmt.Errorf("send onion request via guard %s: %w", circuit.Guard.NodeID, err)
+	}
+
+	exitResp, err := DecryptResponseWithHops(guardKey, relayKey, exitKey, onionResp.Payload, hops)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt circuit response: %w", err)
+	}
+
+	return exitResp, nil
+}
+
 // GetCircuit calls the directory server's GET /circuit endpoint and returns the circuit.
 func GetCircuit(client *http.Client, directoryURL string) (*CircuitResponse, error) {
 	return GetCircuitWithHops(client, directoryURL, 3)
@@ -50,11 +94,11 @@ func GetCircuitWithHops(client *http.Client, directoryURL string, hops int) (*Ci
 	circuitURL := fmt.Sprintf("%s/circuit?hops=%d", directoryURL, hops)
 	resp, err := client.Get(circuitURL)
 	if err != nil {
-		return nil, fmt.Errorf("GET /circuit: %w", err)
+		return nil, fmt.Errorf("GET %s: %w", circuitURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /circuit returned %d", resp.StatusCode)
+		return nil, httpStatusError("GET "+circuitURL, resp)
 	}
 	var circuit CircuitResponse
 	if err := json.NewDecoder(resp.Body).Decode(&circuit); err != nil {
@@ -146,7 +190,7 @@ func sendSetupKey(client *http.Client, nodeURL, circuitID string, pub *rsa.Publi
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("POST /setup to %s returned %d", nodeURL, resp.StatusCode)
+		return httpStatusError("POST /setup to "+nodeURL, resp)
 	}
 	return nil
 }
@@ -275,7 +319,7 @@ func RegisterKey(client *http.Client, nodeURL, circuitID string, key []byte) err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("POST /key to %s returned %d", nodeURL, resp.StatusCode)
+		return httpStatusError("POST /key to "+nodeURL, resp)
 	}
 	return nil
 }
@@ -291,11 +335,11 @@ func SendOnion(client *http.Client, guardURL, circuitID string, payload []byte) 
 	}
 	resp, err := client.Post(guardURL+"/onion", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("POST /onion: %w", err)
+		return nil, fmt.Errorf("POST /onion to %s: %w", guardURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("POST /onion returned %d", resp.StatusCode)
+		return nil, httpStatusError("POST /onion to "+guardURL, resp)
 	}
 	var onionResp onion.OnionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&onionResp); err != nil {
@@ -311,4 +355,21 @@ func validateHops(hops int) error {
 	default:
 		return fmt.Errorf("hops must be 1 or 3")
 	}
+}
+
+func circuitHopAddresses(circuit *CircuitResponse, hops int) (relayAddr, exitAddr string) {
+	if hops != 3 {
+		return "", ""
+	}
+	return fmt.Sprintf("%s:%d", circuit.Relay.Host, circuit.Relay.Port),
+		fmt.Sprintf("%s:%d", circuit.Exit.Host, circuit.Exit.Port)
+}
+
+func httpStatusError(action string, resp *http.Response) error {
+	body, _ := io.ReadAll(resp.Body)
+	message := strings.TrimSpace(string(body))
+	if message == "" {
+		return fmt.Errorf("%s returned %d", action, resp.StatusCode)
+	}
+	return fmt.Errorf("%s returned %d: %s", action, resp.StatusCode, message)
 }

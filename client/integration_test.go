@@ -561,3 +561,114 @@ func TestSetupCircuitIntegration(t *testing.T) {
 		t.Fatalf("body = %q, want %q", exitResp.Body, destBody)
 	}
 }
+
+func TestRunClientEndToEndCLIFlow(t *testing.T) {
+	const destBody = `{"from":"runClient"}`
+
+	guardPriv, guardPubPEM := genIntegrationKeyPair(t)
+	relayPriv, relayPubPEM := genIntegrationKeyPair(t)
+	exitPriv, exitPubPEM := genIntegrationKeyPair(t)
+
+	exitKS := onion.NewKeyStore()
+	exitH := onion.NewExitHandler(exitKS, http.DefaultClient)
+	exitSrv := nodeServerFull(t, exitH.HandleKey, exitH.HandleOnion, onion.HandleSetup(exitKS, exitPriv))
+
+	relayKS := onion.NewKeyStore()
+	relayH := onion.NewHandler(relayKS, http.DefaultClient, "relay")
+	relaySrv := nodeServerFull(t, relayH.HandleKey, relayH.HandleOnion, onion.HandleSetup(relayKS, relayPriv))
+
+	guardKS := onion.NewKeyStore()
+	guardH := onion.NewHandler(guardKS, http.DefaultClient, "guard")
+	guardSrv := nodeServerFull(t, guardH.HandleKey, guardH.HandleOnion, onion.HandleSetup(guardKS, guardPriv))
+
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/resource" {
+			t.Fatalf("destination got %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(destBody))
+	}))
+	t.Cleanup(destination.Close)
+
+	dirSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/circuit" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.URL.Query().Get("hops"); got != "3" {
+			t.Fatalf("hops query = %q, want 3", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CircuitResponse{
+			Guard: nodeRecordForSrv(t, "g1", "guard", guardSrv, guardPubPEM),
+			Relay: nodeRecordForSrv(t, "r1", "relay", relaySrv, relayPubPEM),
+			Exit:  nodeRecordForSrv(t, "e1", "exit", exitSrv, exitPubPEM),
+		})
+	}))
+	t.Cleanup(dirSrv.Close)
+
+	cfg := &clientConfig{
+		DirectoryURL:   dirSrv.URL,
+		DestinationURL: destination.URL + "/resource",
+		Method:         http.MethodGet,
+		Hops:           3,
+		Timeout:        2 * time.Second,
+	}
+
+	var stdout bytes.Buffer
+	if err := runClient(cfg, &stdout); err != nil {
+		t.Fatalf("runClient: %v", err)
+	}
+
+	if stdout.String() != destBody {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), destBody)
+	}
+}
+
+func TestRunClientUnreachableNodeReturnsClearError(t *testing.T) {
+	guardPriv, guardPubPEM := genIntegrationKeyPair(t)
+	relayPriv, relayPubPEM := genIntegrationKeyPair(t)
+	exitPriv, exitPubPEM := genIntegrationKeyPair(t)
+
+	dirSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/circuit" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(CircuitResponse{
+			Guard: NodeRecord{NodeRegistration: NodeRegistration{
+				NodeID: "g1", NodeType: "guard", Host: "127.0.0.1", Port: 1, PublicKey: guardPubPEM,
+			}},
+			Relay: NodeRecord{NodeRegistration: NodeRegistration{
+				NodeID: "r1", NodeType: "relay", Host: "127.0.0.1", Port: 2, PublicKey: relayPubPEM,
+			}},
+			Exit: NodeRecord{NodeRegistration: NodeRegistration{
+				NodeID: "e1", NodeType: "exit", Host: "127.0.0.1", Port: 3, PublicKey: exitPubPEM,
+			}},
+		})
+	}))
+	t.Cleanup(dirSrv.Close)
+
+	_ = guardPriv
+	_ = relayPriv
+	_ = exitPriv
+
+	cfg := &clientConfig{
+		DirectoryURL:   dirSrv.URL,
+		DestinationURL: "http://example.invalid",
+		Method:         http.MethodGet,
+		Hops:           3,
+		Timeout:        200 * time.Millisecond,
+	}
+
+	err := runClient(cfg, io.Discard)
+	if err == nil {
+		t.Fatal("expected runClient to fail when a node is unreachable")
+	}
+	if !strings.Contains(err.Error(), "establish session keys") {
+		t.Fatalf("error = %q, want session key setup context", err)
+	}
+	if !strings.Contains(err.Error(), "setup key for node g1") {
+		t.Fatalf("error = %q, want guard node context", err)
+	}
+}

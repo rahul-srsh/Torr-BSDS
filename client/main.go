@@ -59,16 +59,6 @@ func runClient(cfg *clientConfig, stdout io.Writer) error {
 	client := &http.Client{Timeout: cfg.Timeout}
 	circuitID := fmt.Sprintf("client-%d", time.Now().UnixNano())
 
-	circuit, err := GetCircuitWithHops(client, cfg.DirectoryURL, cfg.Hops)
-	if err != nil {
-		return err
-	}
-
-	guardKey, relayKey, exitKey, err := SetupCircuitWithHops(client, circuitID, circuit, cfg.Hops)
-	if err != nil {
-		return err
-	}
-
 	exitLayer := onion.ExitLayer{
 		URL:    cfg.DestinationURL,
 		Method: cfg.Method,
@@ -77,24 +67,7 @@ func runClient(cfg *clientConfig, stdout io.Writer) error {
 		exitLayer.Body = []byte(cfg.Body)
 	}
 
-	var relayAddr, exitAddr string
-	if cfg.Hops == 3 {
-		relayAddr = fmt.Sprintf("%s:%d", circuit.Relay.Host, circuit.Relay.Port)
-		exitAddr = fmt.Sprintf("%s:%d", circuit.Exit.Host, circuit.Exit.Port)
-	}
-
-	payload, err := BuildOnionWithHops(guardKey, relayKey, exitKey, exitLayer, relayAddr, exitAddr, cfg.Hops)
-	if err != nil {
-		return err
-	}
-
-	guardURL := fmt.Sprintf("http://%s:%d", circuit.Guard.Host, circuit.Guard.Port)
-	onionResp, err := SendOnion(client, guardURL, circuitID, payload)
-	if err != nil {
-		return err
-	}
-
-	exitResp, err := DecryptResponseWithHops(guardKey, relayKey, exitKey, onionResp.Payload, cfg.Hops)
+	exitResp, err := ExecuteRequestWithHops(client, cfg.DirectoryURL, circuitID, exitLayer, cfg.Hops)
 	if err != nil {
 		return err
 	}
