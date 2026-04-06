@@ -114,6 +114,20 @@ func TestRegisterHeartbeatNodesAndCircuitHandlers(t *testing.T) {
 		t.Fatalf("unexpected circuit = %+v", circuit)
 	}
 
+	singleHopRecorder := httptest.NewRecorder()
+	singleHopRequest := httptest.NewRequest(http.MethodGet, "/circuit?hops=1", nil)
+	mux.ServeHTTP(singleHopRecorder, singleHopRequest)
+	assertStatus(t, singleHopRecorder, http.StatusOK)
+
+	var singleHop CircuitResponse
+	decodeResponse(t, singleHopRecorder, &singleHop)
+	if singleHop.Guard.NodeType != "guard" {
+		t.Fatalf("single hop guard = %+v, want guard node", singleHop.Guard)
+	}
+	if singleHop.Relay.NodeID != "" || singleHop.Exit.NodeID != "" {
+		t.Fatalf("single hop circuit should only include a guard: %+v", singleHop)
+	}
+
 	debugRecorder := httptest.NewRecorder()
 	debugRequest := httptest.NewRequest(http.MethodGet, "/debug/nodes", nil)
 	mux.ServeHTTP(debugRecorder, debugRequest)
@@ -273,6 +287,13 @@ func TestHandlersRejectInvalidRequests(t *testing.T) {
 			path:           "/circuit",
 			expectedStatus: http.StatusServiceUnavailable,
 			expectedError:  "not enough healthy nodes to build a circuit",
+		},
+		{
+			name:           "invalid hops parameter",
+			method:         http.MethodGet,
+			path:           "/circuit?hops=2",
+			expectedStatus: http.StatusBadRequest,
+			expectedError:  "hops must be 1 or 3",
 		},
 	}
 

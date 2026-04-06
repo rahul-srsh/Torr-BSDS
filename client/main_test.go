@@ -81,6 +81,36 @@ func TestBuildOnionLayerStructure(t *testing.T) {
 	}
 }
 
+func TestBuildOnionOneHopStructure(t *testing.T) {
+	guardKey := randomClientKey(t)
+	exitLayer := onion.ExitLayer{
+		URL:    "https://example.com/direct",
+		Method: http.MethodGet,
+		Body:   []byte("payload"),
+	}
+
+	guardCT, err := BuildOnionWithHops(guardKey, nil, nil, exitLayer, "", "", 1)
+	if err != nil {
+		t.Fatalf("BuildOnionWithHops(1): %v", err)
+	}
+
+	plaintext, err := onion.Decrypt(guardKey, guardCT)
+	if err != nil {
+		t.Fatalf("decrypt single hop layer: %v", err)
+	}
+
+	var got onion.ExitLayer
+	if err := json.Unmarshal(plaintext, &got); err != nil {
+		t.Fatalf("unmarshal single hop exit layer: %v", err)
+	}
+	if got.URL != exitLayer.URL || got.Method != exitLayer.Method {
+		t.Fatalf("single hop exit layer = %+v, want %+v", got, exitLayer)
+	}
+	if !bytes.Equal(got.Body, exitLayer.Body) {
+		t.Fatalf("single hop body = %q, want %q", got.Body, exitLayer.Body)
+	}
+}
+
 // TestDecryptResponseRoundTrip verifies that DecryptResponse correctly peels
 // guard → relay → exit layers to recover the original ExitResponse.
 func TestDecryptResponseRoundTrip(t *testing.T) {
@@ -128,6 +158,28 @@ func TestDecryptResponseWrongKeyOrder(t *testing.T) {
 	_, err := DecryptResponse(relayKey, guardKey, exitKey, guardCT)
 	if err == nil {
 		t.Fatal("expected error when applying keys in wrong order")
+	}
+}
+
+func TestDecryptResponseOneHopRoundTrip(t *testing.T) {
+	guardKey := randomClientKey(t)
+
+	exitResp := onion.ExitResponse{
+		StatusCode: http.StatusAccepted,
+		Body:       []byte(`{"mode":"one-hop"}`),
+	}
+	exitRespJSON, _ := json.Marshal(exitResp)
+	guardCT, _ := onion.Encrypt(guardKey, exitRespJSON)
+
+	result, err := DecryptResponseWithHops(guardKey, nil, nil, guardCT, 1)
+	if err != nil {
+		t.Fatalf("DecryptResponseWithHops(1): %v", err)
+	}
+	if result.StatusCode != http.StatusAccepted {
+		t.Fatalf("statusCode = %d, want %d", result.StatusCode, http.StatusAccepted)
+	}
+	if !bytes.Equal(result.Body, []byte(`{"mode":"one-hop"}`)) {
+		t.Fatalf("body = %q, want one-hop payload", result.Body)
 	}
 }
 
@@ -236,6 +288,90 @@ func TestSetupCircuitBadPublicKey(t *testing.T) {
 	_, _, _, err := SetupCircuit(http.DefaultClient, "c1", circuit)
 	if err == nil {
 		t.Fatal("expected error for malformed public key")
+	}
+}
+
+func TestSetupCircuitOneHopStoresGuardOnly(t *testing.T) {
+	const circuitID = "setup-test-1-hop"
+
+	guardPriv, guardPubPEM := genTestKeyPair(t)
+	guardKS := onion.NewKeyStore()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/setup", onion.HandleSetup(guardKS, guardPriv))
+	guardSrv := httptest.NewServer(mux)
+	t.Cleanup(guardSrv.Close)
+
+	circuit := &CircuitResponse{
+		Guard: nodeRecordFromURL(t, "g1", "guard", guardSrv.URL, guardPubPEM),
+	}
+
+	gKey, rKey, eKey, err := SetupCircuitWithHops(http.DefaultClient, circuitID, circuit, 1)
+	if err != nil {
+		t.Fatalf("SetupCircuitWithHops(1): %v", err)
+	}
+	if len(gKey) != 32 {
+		t.Fatalf("guard key length = %d, want 32", len(gKey))
+	}
+	if len(rKey) != 0 || len(eKey) != 0 {
+		t.Fatalf("1-hop setup should only return a guard key, got relay=%d exit=%d", len(rKey), len(eKey))
+	}
+	stored, ok := guardKS.Get(circuitID)
+	if !ok {
+		t.Fatal("guard key not stored")
+	}
+	if !bytes.Equal(stored, gKey) {
+		t.Fatal("stored guard key does not match returned key")
+	}
+}
+
+func TestGetCircuitWithHopsUsesQuery(t *testing.T) {
+	dirSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("hops"); got != "1" {
+			t.Fatalf("hops query = %q, want 1", got)
+		}
+		_ = json.NewEncoder(w).Encode(CircuitResponse{
+			Guard: NodeRecord{NodeRegistration: NodeRegistration{
+				NodeID: "g1", NodeType: "guard", Host: "127.0.0.1", Port: 8080, PublicKey: "pub",
+			}},
+		})
+	}))
+	t.Cleanup(dirSrv.Close)
+
+	circuit, err := GetCircuitWithHops(http.DefaultClient, dirSrv.URL, 1)
+	if err != nil {
+		t.Fatalf("GetCircuitWithHops(1): %v", err)
+	}
+	if circuit.Guard.NodeID != "g1" {
+		t.Fatalf("guard node = %+v, want g1", circuit.Guard)
+	}
+	if circuit.Relay.NodeID != "" || circuit.Exit.NodeID != "" {
+		t.Fatalf("1-hop circuit should not include relay/exit: %+v", circuit)
+	}
+}
+
+func TestParseClientConfigHops(t *testing.T) {
+	cfg, err := parseClientConfig([]string{
+		"--directory-url", "http://directory",
+		"--destination-url", "http://destination",
+		"--hops", "1",
+	})
+	if err != nil {
+		t.Fatalf("parseClientConfig: %v", err)
+	}
+	if cfg.Hops != 1 {
+		t.Fatalf("hops = %d, want 1", cfg.Hops)
+	}
+
+	defaultCfg, err := parseClientConfig([]string{
+		"--directory-url", "http://directory",
+		"--destination-url", "http://destination",
+	})
+	if err != nil {
+		t.Fatalf("parseClientConfig default: %v", err)
+	}
+	if defaultCfg.Hops != 3 {
+		t.Fatalf("default hops = %d, want 3", defaultCfg.Hops)
 	}
 }
 

@@ -38,7 +38,17 @@ type CircuitResponse struct {
 
 // GetCircuit calls the directory server's GET /circuit endpoint and returns the circuit.
 func GetCircuit(client *http.Client, directoryURL string) (*CircuitResponse, error) {
-	resp, err := client.Get(directoryURL + "/circuit")
+	return GetCircuitWithHops(client, directoryURL, 3)
+}
+
+// GetCircuitWithHops fetches a circuit from the directory server for the requested hop count.
+func GetCircuitWithHops(client *http.Client, directoryURL string, hops int) (*CircuitResponse, error) {
+	if err := validateHops(hops); err != nil {
+		return nil, err
+	}
+
+	circuitURL := fmt.Sprintf("%s/circuit?hops=%d", directoryURL, hops)
+	resp, err := client.Get(circuitURL)
 	if err != nil {
 		return nil, fmt.Errorf("GET /circuit: %w", err)
 	}
@@ -50,6 +60,12 @@ func GetCircuit(client *http.Client, directoryURL string) (*CircuitResponse, err
 	if err := json.NewDecoder(resp.Body).Decode(&circuit); err != nil {
 		return nil, fmt.Errorf("decode circuit response: %w", err)
 	}
+	if circuit.Guard.NodeID == "" {
+		return nil, fmt.Errorf("decode circuit response: guard node missing")
+	}
+	if hops == 3 && (circuit.Relay.NodeID == "" || circuit.Exit.NodeID == "") {
+		return nil, fmt.Errorf("decode circuit response: relay or exit node missing for 3-hop circuit")
+	}
 	return &circuit, nil
 }
 
@@ -57,21 +73,47 @@ func GetCircuit(client *http.Client, directoryURL string) (*CircuitResponse, err
 // encrypts it with the node's public key, and POST /setup to each node in the circuit.
 // Returns (guardKey, relayKey, exitKey) for use with BuildOnion and DecryptResponse.
 func SetupCircuit(client *http.Client, circuitID string, circuit *CircuitResponse) (guardKey, relayKey, exitKey []byte, err error) {
-	guardKey, relayKey, exitKey = make([]byte, 32), make([]byte, 32), make([]byte, 32)
-	for _, k := range [][]byte{guardKey, relayKey, exitKey} {
-		if _, err = rand.Read(k); err != nil {
-			return nil, nil, nil, fmt.Errorf("generate session key: %w", err)
-		}
+	return SetupCircuitWithHops(client, circuitID, circuit, 3)
+}
+
+// SetupCircuitWithHops establishes session keys for the requested hop count.
+func SetupCircuitWithHops(client *http.Client, circuitID string, circuit *CircuitResponse, hops int) (guardKey, relayKey, exitKey []byte, err error) {
+	if err := validateHops(hops); err != nil {
+		return nil, nil, nil, err
 	}
 
-	for _, tc := range []struct {
+	guardKey = make([]byte, 32)
+	if _, err = rand.Read(guardKey); err != nil {
+		return nil, nil, nil, fmt.Errorf("generate session key: %w", err)
+	}
+
+	candidates := []struct {
 		node NodeRecord
 		key  []byte
 	}{
 		{circuit.Guard, guardKey},
-		{circuit.Relay, relayKey},
-		{circuit.Exit, exitKey},
-	} {
+	}
+	if hops == 3 {
+		relayKey = make([]byte, 32)
+		exitKey = make([]byte, 32)
+		for _, k := range [][]byte{relayKey, exitKey} {
+			if _, err = rand.Read(k); err != nil {
+				return nil, nil, nil, fmt.Errorf("generate session key: %w", err)
+			}
+		}
+		candidates = append(candidates,
+			struct {
+				node NodeRecord
+				key  []byte
+			}{circuit.Relay, relayKey},
+			struct {
+				node NodeRecord
+				key  []byte
+			}{circuit.Exit, exitKey},
+		)
+	}
+
+	for _, tc := range candidates {
 		pub, parseErr := onion.ParsePublicKey(tc.node.PublicKey)
 		if parseErr != nil {
 			return nil, nil, nil, fmt.Errorf("parse public key for node %s: %w", tc.node.NodeID, parseErr)
@@ -81,6 +123,7 @@ func SetupCircuit(client *http.Client, circuitID string, circuit *CircuitRespons
 			return nil, nil, nil, fmt.Errorf("setup key for node %s: %w", tc.node.NodeID, sendErr)
 		}
 	}
+
 	return guardKey, relayKey, exitKey, nil
 }
 
@@ -116,19 +159,35 @@ func sendSetupKey(client *http.Client, nodeURL, circuitID string, pub *rsa.Publi
 //	relay layer : Layer{nextHop=exitAddr}  encrypted with relayKey
 //	guard layer : Layer{nextHop=relayAddr} encrypted with guardKey  ← sent to guard
 func BuildOnion(guardKey, relayKey, exitKey []byte, exitLayer onion.ExitLayer, relayAddr, exitAddr string) ([]byte, error) {
+	return BuildOnionWithHops(guardKey, relayKey, exitKey, exitLayer, relayAddr, exitAddr, 3)
+}
+
+// BuildOnionWithHops constructs a hop-count-specific onion payload.
+func BuildOnionWithHops(guardKey, relayKey, exitKey []byte, exitLayer onion.ExitLayer, relayAddr, exitAddr string, hops int) ([]byte, error) {
+	if err := validateHops(hops); err != nil {
+		return nil, err
+	}
+
 	exitLayerJSON, err := json.Marshal(exitLayer)
 	if err != nil {
 		return nil, fmt.Errorf("marshal exit layer: %w", err)
 	}
-	exitCT, err := onion.Encrypt(exitKey, exitLayerJSON)
+	layerKey := exitKey
+	if hops == 1 {
+		layerKey = guardKey
+	}
+	exitCT, err := onion.Encrypt(layerKey, exitLayerJSON)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt exit layer: %w", err)
 	}
+	if hops == 1 {
+		return exitCT, nil
+	}
 
-		relayLayerJSON, err := json.Marshal(onion.Layer{
-			NextHop: exitAddr,
-			Payload: exitCT,
-		})
+	relayLayerJSON, err := json.Marshal(onion.Layer{
+		NextHop: exitAddr,
+		Payload: exitCT,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal relay layer: %w", err)
 	}
@@ -137,10 +196,10 @@ func BuildOnion(guardKey, relayKey, exitKey []byte, exitLayer onion.ExitLayer, r
 		return nil, fmt.Errorf("encrypt relay layer: %w", err)
 	}
 
-		guardLayerJSON, err := json.Marshal(onion.Layer{
-			NextHop: relayAddr,
-			Payload: relayCT,
-		})
+	guardLayerJSON, err := json.Marshal(onion.Layer{
+		NextHop: relayAddr,
+		Payload: relayCT,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal guard layer: %w", err)
 	}
@@ -161,6 +220,27 @@ func BuildOnion(guardKey, relayKey, exitKey []byte, exitLayer onion.ExitLayer, r
 //
 // Client peels: guardKey → relayKey → exitKey → ExitResponse.
 func DecryptResponse(guardKey, relayKey, exitKey, payload []byte) (*onion.ExitResponse, error) {
+	return DecryptResponseWithHops(guardKey, relayKey, exitKey, payload, 3)
+}
+
+// DecryptResponseWithHops peels the onion response according to the requested hop count.
+func DecryptResponseWithHops(guardKey, relayKey, exitKey, payload []byte, hops int) (*onion.ExitResponse, error) {
+	if err := validateHops(hops); err != nil {
+		return nil, err
+	}
+
+	if hops == 1 {
+		exitRespJSON, err := onion.Decrypt(guardKey, payload)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt guard layer: %w", err)
+		}
+		var exitResp onion.ExitResponse
+		if err := json.Unmarshal(exitRespJSON, &exitResp); err != nil {
+			return nil, fmt.Errorf("unmarshal ExitResponse: %w", err)
+		}
+		return &exitResp, nil
+	}
+
 	relayEncrypted, err := onion.Decrypt(guardKey, payload)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt guard layer: %w", err)
@@ -222,4 +302,13 @@ func SendOnion(client *http.Client, guardURL, circuitID string, payload []byte) 
 		return nil, fmt.Errorf("decode onion response: %w", err)
 	}
 	return &onionResp, nil
+}
+
+func validateHops(hops int) error {
+	switch hops {
+	case 1, 3:
+		return nil
+	default:
+		return fmt.Errorf("hops must be 1 or 3")
+	}
 }

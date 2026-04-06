@@ -69,6 +69,19 @@ func TestIntegrationRegisterHeartbeatListAndCircuitFlow(t *testing.T) {
 	if circuit.Guard.Host == "" || circuit.Relay.Port == 0 || circuit.Exit.PublicKey == "" {
 		t.Fatalf("circuit missing connection data: %+v", circuit)
 	}
+
+	singleHopRecorder := httptest.NewRecorder()
+	mux.ServeHTTP(singleHopRecorder, httptest.NewRequest(http.MethodGet, "/circuit?hops=1", nil))
+	assertStatus(t, singleHopRecorder, http.StatusOK)
+
+	var singleHop CircuitResponse
+	decodeResponse(t, singleHopRecorder, &singleHop)
+	if singleHop.Guard.NodeID != guard.NodeID {
+		t.Fatalf("single hop guard = %+v, want %s", singleHop.Guard, guard.NodeID)
+	}
+	if singleHop.Relay.NodeID != "" || singleHop.Exit.NodeID != "" {
+		t.Fatalf("single hop response should only include guard: %+v", singleHop)
+	}
 }
 
 func TestIntegrationEdgeCases(t *testing.T) {

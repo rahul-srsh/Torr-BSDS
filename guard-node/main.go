@@ -55,7 +55,7 @@ func main() {
 	srv.Mux.HandleFunc("/forward/echo", forwardEchoHandler(targetURL, httpClient))
 
 	keys := onion.NewKeyStore()
-	h := onion.NewHandler(keys, httpClient, "guard")
+	h := onion.NewHandlerWithDirectExit(keys, httpClient, "guard")
 	srv.Mux.HandleFunc("/key", h.HandleKey)
 	srv.Mux.HandleFunc("/onion", h.HandleOnion)
 	srv.Mux.HandleFunc("/setup", onion.HandleSetup(keys, privKey))

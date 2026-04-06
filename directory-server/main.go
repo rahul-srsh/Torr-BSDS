@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -310,9 +311,27 @@ func (s *DirectoryServer) nodesHandler(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.registry.GroupByType(false))
 }
 
-func (s *DirectoryServer) circuitHandler(w http.ResponseWriter, _ *http.Request) {
+func (s *DirectoryServer) circuitHandler(w http.ResponseWriter, r *http.Request) {
+	hops, err := parseHops(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	grouped := s.registry.GroupByType(false)
-	if len(grouped.Guard) == 0 || len(grouped.Relay) == 0 || len(grouped.Exit) == 0 {
+	if len(grouped.Guard) == 0 {
+		writeJSONError(w, http.StatusServiceUnavailable, "not enough healthy nodes to build a circuit")
+		return
+	}
+
+	if hops == 1 {
+		writeJSON(w, http.StatusOK, map[string]NodeRecord{
+			"guard": grouped.Guard[s.randomIntn(len(grouped.Guard))],
+		})
+		return
+	}
+
+	if len(grouped.Relay) == 0 || len(grouped.Exit) == 0 {
 		writeJSONError(w, http.StatusServiceUnavailable, "not enough healthy nodes to build a circuit")
 		return
 	}
@@ -324,6 +343,23 @@ func (s *DirectoryServer) circuitHandler(w http.ResponseWriter, _ *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, circuit)
+}
+
+func parseHops(r *http.Request) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("hops"))
+	if raw == "" {
+		return 3, nil
+	}
+
+	hops, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, errors.New("hops must be 1 or 3")
+	}
+	if hops != 1 && hops != 3 {
+		return 0, errors.New("hops must be 1 or 3")
+	}
+
+	return hops, nil
 }
 
 func (s *DirectoryServer) debugNodesHandler(w http.ResponseWriter, _ *http.Request) {

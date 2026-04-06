@@ -126,14 +126,26 @@ func UnwrapLayer(key, ciphertext []byte) (*Layer, error) {
 
 // Handler provides POST /key and POST /onion endpoints for any onion routing node.
 type Handler struct {
-	Keys      *KeyStore
-	Client    *http.Client
-	NodeLabel string // "guard", "relay", or "exit" — used in log messages
+	Keys            *KeyStore
+	Client          *http.Client
+	NodeLabel       string // "guard", "relay", or "exit" — used in log messages
+	AllowDirectExit bool
 }
 
 // NewHandler creates a Handler for the named node type.
 func NewHandler(keys *KeyStore, client *http.Client, nodeLabel string) *Handler {
 	return &Handler{Keys: keys, Client: client, NodeLabel: nodeLabel}
+}
+
+// NewHandlerWithDirectExit creates a forwarding handler that can also terminate
+// a single-hop circuit by acting as the exit node after decrypting the guard layer.
+func NewHandlerWithDirectExit(keys *KeyStore, client *http.Client, nodeLabel string) *Handler {
+	return &Handler{
+		Keys:            keys,
+		Client:          client,
+		NodeLabel:       nodeLabel,
+		AllowDirectExit: true,
+	}
 }
 
 // HandleKey registers an AES-256 session key for a circuit.
@@ -198,6 +210,16 @@ func (h *Handler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 
 	layer, err := UnwrapLayer(key, req.Payload)
 	if err != nil {
+		if h.AllowDirectExit {
+			encrypted, exitLayer, exitErr := ExecuteExitPayload(r.Context(), h.Client, key, req.Payload)
+			if exitErr == nil {
+				log.Printf("[%s] circuit %s: %s → direct %s %s", h.NodeLabel, req.CircuitID, prevHop, exitLayer.Method, exitLayer.URL)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(OnionResponse{Payload: encrypted})
+				return
+			}
+		}
+
 		log.Printf("[%s] decryption failed for circuit %s from %s: %v", h.NodeLabel, req.CircuitID, prevHop, err)
 		http.Error(w, "decryption failed", http.StatusBadRequest)
 		return

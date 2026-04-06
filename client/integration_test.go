@@ -187,12 +187,12 @@ func TestFullCircuitWithPostBody(t *testing.T) {
 
 	guardCT, err := BuildOnion(
 		guardKey, relayKey, exitKey,
-			onion.ExitLayer{
-				URL:     dest.URL,
-				Method:  http.MethodPost,
-				Headers: map[string]string{"Content-Type": "application/json"},
-				Body:    requestBody,
-			},
+		onion.ExitLayer{
+			URL:     dest.URL,
+			Method:  http.MethodPost,
+			Headers: map[string]string{"Content-Type": "application/json"},
+			Body:    requestBody,
+		},
 		addr(relaySrv), addr(exitSrv),
 	)
 	if err != nil {
@@ -215,6 +215,56 @@ func TestFullCircuitWithPostBody(t *testing.T) {
 	}
 	if string(exitResp.Body) != string(responseBody) {
 		t.Fatalf("body = %q, want %q", exitResp.Body, responseBody)
+	}
+}
+
+func TestOneHopCircuitRoundTrip(t *testing.T) {
+	const circuitID = "integration-1-hop"
+	const destBody = `{"message":"hello from one-hop"}`
+
+	guardKey := randomIntegrationKey(t)
+
+	dest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api" {
+			t.Errorf("dest: got %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(destBody))
+	}))
+	t.Cleanup(dest.Close)
+
+	guardKS := onion.NewKeyStore()
+	guardH := onion.NewHandlerWithDirectExit(guardKS, http.DefaultClient, "guard")
+	guardSrv := nodeServer(t, guardH.HandleKey, guardH.HandleOnion)
+
+	if err := RegisterKey(http.DefaultClient, guardSrv.URL, circuitID, guardKey); err != nil {
+		t.Fatalf("register guard key: %v", err)
+	}
+
+	guardCT, err := BuildOnionWithHops(
+		guardKey, nil, nil,
+		onion.ExitLayer{URL: dest.URL + "/api", Method: http.MethodGet},
+		"", "", 1,
+	)
+	if err != nil {
+		t.Fatalf("BuildOnionWithHops(1): %v", err)
+	}
+
+	onionResp, err := SendOnion(http.DefaultClient, guardSrv.URL, circuitID, guardCT)
+	if err != nil {
+		t.Fatalf("SendOnion: %v", err)
+	}
+
+	exitResp, err := DecryptResponseWithHops(guardKey, nil, nil, onionResp.Payload, 1)
+	if err != nil {
+		t.Fatalf("DecryptResponseWithHops(1): %v", err)
+	}
+	if exitResp.StatusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", exitResp.StatusCode, http.StatusOK)
+	}
+	if string(exitResp.Body) != destBody {
+		t.Fatalf("body = %q, want %q", exitResp.Body, destBody)
 	}
 }
 
@@ -349,14 +399,14 @@ func TestFullCircuitMultipleCircuits(t *testing.T) {
 			t.Fatalf("SendOnion %s: %v", tc.circuitID, err)
 		}
 
-			exitResp, err := DecryptResponse(gKey, rKey, eKey, onionResp.Payload)
-			if err != nil {
-				t.Fatalf("DecryptResponse %s: %v", tc.circuitID, err)
-			}
+		exitResp, err := DecryptResponse(gKey, rKey, eKey, onionResp.Payload)
+		if err != nil {
+			t.Fatalf("DecryptResponse %s: %v", tc.circuitID, err)
+		}
 
-			if string(exitResp.Body) != tc.destBody {
-				t.Fatalf("%s body = %q, want %q", tc.circuitID, exitResp.Body, tc.destBody)
-			}
+		if string(exitResp.Body) != tc.destBody {
+			t.Fatalf("%s body = %q, want %q", tc.circuitID, exitResp.Body, tc.destBody)
+		}
 		log.Printf("[client] %s verified: body matches destination", tc.circuitID)
 	}
 }
