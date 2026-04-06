@@ -58,6 +58,15 @@ func TestEncryptKeyProducesDistinctCiphertexts(t *testing.T) {
 	}
 }
 
+func TestEncryptKeyRejectsOversizedPlaintext(t *testing.T) {
+	priv, _ := testRSAKeyPair(t)
+	oversized := make([]byte, 512)
+	_, err := EncryptKey(&priv.PublicKey, oversized)
+	if err == nil {
+		t.Fatal("expected oversized plaintext to be rejected")
+	}
+}
+
 func TestDecryptKeyWrongPrivateKey(t *testing.T) {
 	priv1, _ := testRSAKeyPair(t)
 	priv2, _ := testRSAKeyPair(t)

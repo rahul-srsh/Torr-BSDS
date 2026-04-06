@@ -40,6 +40,13 @@ func TestEncryptProducesDistinctCiphertexts(t *testing.T) {
 	}
 }
 
+func TestEncryptInvalidKeyLength(t *testing.T) {
+	_, err := Encrypt([]byte("short"), []byte("plaintext"))
+	if err == nil {
+		t.Fatal("expected error for invalid encryption key length")
+	}
+}
+
 func TestDecryptCiphertextTooShort(t *testing.T) {
 	_, err := Decrypt(randomKey(t), []byte("short"))
 	if err == nil {
@@ -491,6 +498,38 @@ func TestHandleOnionNextHopReturnsError(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleOnion(w, r)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadGateway)
+	}
+}
+
+func TestHandleOnionInvalidNextHopResponse(t *testing.T) {
+	key := randomKey(t)
+	ks := NewKeyStore()
+	ks.Store("c1", key)
+
+	nextHop := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{bad"))
+	}))
+	defer nextHop.Close()
+
+	layer := Layer{
+		NextHop: strings.TrimPrefix(nextHop.URL, "http://"),
+		Payload: []byte("inner"),
+	}
+	layerJSON, _ := json.Marshal(layer)
+	ct, _ := Encrypt(key, layerJSON)
+
+	h := NewHandler(ks, http.DefaultClient, "test")
+	body, _ := json.Marshal(OnionRequest{
+		CircuitID: "c1",
+		Payload:   ct,
+	})
+	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.HandleOnion(w, r)
+
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadGateway)
 	}

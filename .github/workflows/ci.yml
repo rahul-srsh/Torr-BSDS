@@ -13,6 +13,7 @@ jobs:
     strategy:
       matrix:
         module:
+          - shared
           - directory-server
           - guard-node
           - relay-node

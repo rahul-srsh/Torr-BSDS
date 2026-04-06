@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -202,6 +203,32 @@ func TestExitHandleOnionUnknownCircuit(t *testing.T) {
 	}
 }
 
+func TestExitHandleOnionInvalidJSONRequest(t *testing.T) {
+	h := NewExitHandler(NewKeyStore(), http.DefaultClient)
+	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewBufferString("{bad"))
+	w := httptest.NewRecorder()
+	h.HandleOnion(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestExitHandleOnionMissingRequestFields(t *testing.T) {
+	h := NewExitHandler(NewKeyStore(), http.DefaultClient)
+	for _, req := range []OnionRequest{
+		{Payload: []byte("abc")},
+		{CircuitID: "c1"},
+	} {
+		body, _ := json.Marshal(req)
+		r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		h.HandleOnion(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+		}
+	}
+}
+
 // TestExitHandleOnionDecryptionFailure verifies 400 for tampered ciphertext.
 func TestExitHandleOnionDecryptionFailure(t *testing.T) {
 	ks := NewKeyStore()
@@ -338,6 +365,38 @@ func TestExitHandleOnionTimeout(t *testing.T) {
 	}
 }
 
+func TestExitHandleOnionResponseReadFailure(t *testing.T) {
+	key := randomKey(t)
+	ks := NewKeyStore()
+	ks.Store("e10", key)
+
+	layer := ExitLayer{URL: "https://example.com", Method: http.MethodGet}
+	layerJSON, _ := json.Marshal(layer)
+	ct, _ := Encrypt(key, layerJSON)
+
+	client := &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       failingReadCloser{},
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	h := NewExitHandler(ks, client)
+
+	body, _ := json.Marshal(OnionRequest{
+		CircuitID: "e10",
+		Payload:   ct,
+	})
+	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.HandleOnion(w, r)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadGateway)
+	}
+}
+
 // TestExitHandleOnionInvalidURL verifies 400 for a malformed destination URL.
 func TestExitHandleOnionInvalidURL(t *testing.T) {
 	key := randomKey(t)
@@ -359,4 +418,20 @@ func TestExitHandleOnionInvalidURL(t *testing.T) {
 	if w.Code != http.StatusBadRequest && w.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 400 or 502 for invalid URL", w.Code)
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+type failingReadCloser struct{}
+
+func (failingReadCloser) Read([]byte) (int, error) {
+	return 0, errors.New("read failure")
+}
+
+func (failingReadCloser) Close() error {
+	return nil
 }
