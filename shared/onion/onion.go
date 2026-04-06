@@ -18,18 +18,18 @@ import (
 // OnionRequest is the JSON body for POST /onion.
 type OnionRequest struct {
 	CircuitID string `json:"circuitId"`
-	Payload   string `json:"payload"` // base64-encoded AES-256-GCM ciphertext
+	Payload   []byte `json:"payload"` // raw AES-256-GCM ciphertext
 }
 
 // OnionResponse is the JSON body returned from POST /onion.
 type OnionResponse struct {
-	Payload string `json:"payload"` // base64-encoded AES-256-GCM ciphertext
+	Payload []byte `json:"payload"` // raw AES-256-GCM ciphertext
 }
 
 // Layer is the plaintext structure revealed after decrypting one onion layer.
 type Layer struct {
 	NextHop string `json:"nextHop"` // host:port of the next node
-	Payload string `json:"payload"` // base64-encoded inner ciphertext for the next hop
+	Payload []byte `json:"payload"` // inner ciphertext for the next hop
 }
 
 // KeyRequest is the JSON body for POST /key.
@@ -149,7 +149,7 @@ func (h *Handler) HandleKey(w http.ResponseWriter, r *http.Request) {
 
 // HandleOnion decrypts the outermost onion layer, forwards the inner payload to the
 // next hop, and re-encrypts the response before returning it to the caller.
-// POST /onion  {"circuitId":"…","payload":"<base64-ciphertext>"}
+// POST /onion  {"circuitId":"…","payload":"<ciphertext-bytes>"}
 func (h *Handler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -164,7 +164,7 @@ func (h *Handler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	if req.CircuitID == "" || req.Payload == "" {
+	if req.CircuitID == "" || len(req.Payload) == 0 {
 		log.Printf("[%s] bad request from %s: missing circuitId or payload", h.NodeLabel, prevHop)
 		http.Error(w, "circuitId and payload are required", http.StatusBadRequest)
 		return
@@ -177,14 +177,7 @@ func (h *Handler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ciphertext, err := base64.StdEncoding.DecodeString(req.Payload)
-	if err != nil {
-		log.Printf("[%s] invalid payload encoding from %s: %v", h.NodeLabel, prevHop, err)
-		http.Error(w, "payload must be valid base64", http.StatusBadRequest)
-		return
-	}
-
-	plaintext, err := Decrypt(key, ciphertext)
+	plaintext, err := Decrypt(key, req.Payload)
 	if err != nil {
 		log.Printf("[%s] decryption failed for circuit %s from %s: %v", h.NodeLabel, req.CircuitID, prevHop, err)
 		http.Error(w, "decryption failed", http.StatusBadRequest)
@@ -232,15 +225,8 @@ func (h *Handler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nextPayload, err := base64.StdEncoding.DecodeString(nextResp.Payload)
-	if err != nil {
-		log.Printf("[%s] response payload base64 error: %v", h.NodeLabel, err)
-		http.Error(w, "invalid next hop response payload", http.StatusBadGateway)
-		return
-	}
-
 	// Return path: wrap the next hop's response in one more encryption layer with our session key.
-	encrypted, err := Encrypt(key, nextPayload)
+	encrypted, err := Encrypt(key, nextResp.Payload)
 	if err != nil {
 		log.Printf("[%s] encrypt response: %v", h.NodeLabel, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -249,6 +235,6 @@ func (h *Handler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(OnionResponse{
-		Payload: base64.StdEncoding.EncodeToString(encrypted),
+		Payload: encrypted,
 	})
 }

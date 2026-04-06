@@ -40,7 +40,7 @@ func TestExitNodeRoundTrip(t *testing.T) {
 
 	body, _ := json.Marshal(onion.OnionRequest{
 		CircuitID: "exit-1",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -54,8 +54,7 @@ func TestExitNodeRoundTrip(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	// Relay decrypts with exit key.
-	respCT, _ := base64.StdEncoding.DecodeString(resp.Payload)
-	plaintext, err := onion.Decrypt(key, respCT)
+	plaintext, err := onion.Decrypt(key, resp.Payload)
 	if err != nil {
 		t.Fatalf("Decrypt exit response: %v", err)
 	}
@@ -67,9 +66,8 @@ func TestExitNodeRoundTrip(t *testing.T) {
 	if exitResp.StatusCode != http.StatusOK {
 		t.Fatalf("inner status = %d, want %d", exitResp.StatusCode, http.StatusOK)
 	}
-	bodyBytes, _ := base64.StdEncoding.DecodeString(exitResp.Body)
-	if string(bodyBytes) != `{"status":"ok"}` {
-		t.Fatalf("body = %q, want {\"status\":\"ok\"}", bodyBytes)
+	if string(exitResp.Body) != `{"status":"ok"}` {
+		t.Fatalf("body = %q, want {\"status\":\"ok\"}", exitResp.Body)
 	}
 }
 
@@ -117,7 +115,7 @@ func TestExitNodeNon200PropagatesThrough(t *testing.T) {
 
 	body, _ := json.Marshal(onion.OnionRequest{
 		CircuitID: "exit-2",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -129,8 +127,7 @@ func TestExitNodeNon200PropagatesThrough(t *testing.T) {
 
 	var resp onion.OnionResponse
 	json.NewDecoder(w.Body).Decode(&resp)
-	respCT, _ := base64.StdEncoding.DecodeString(resp.Payload)
-	plaintext, _ := onion.Decrypt(key, respCT)
+	plaintext, _ := onion.Decrypt(key, resp.Payload)
 
 	var exitResp onion.ExitResponse
 	json.Unmarshal(plaintext, &exitResp)

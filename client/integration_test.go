@@ -1,12 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -118,11 +119,7 @@ func TestFullCircuitRoundTrip(t *testing.T) {
 	log.Printf("[client] circuit %s round-trip latency: %s", circuitID, elapsed)
 
 	// ── Decrypt 3 layers: guard → relay → exit ────────────────────────────────
-	payload, err := base64.StdEncoding.DecodeString(onionResp.Payload)
-	if err != nil {
-		t.Fatalf("decode response payload: %v", err)
-	}
-	exitResp, err := DecryptResponse(guardKey, relayKey, exitKey, payload)
+	exitResp, err := DecryptResponse(guardKey, relayKey, exitKey, onionResp.Payload)
 	if err != nil {
 		t.Fatalf("DecryptResponse: %v", err)
 	}
@@ -131,9 +128,8 @@ func TestFullCircuitRoundTrip(t *testing.T) {
 	if exitResp.StatusCode != http.StatusOK {
 		t.Fatalf("statusCode = %d, want %d", exitResp.StatusCode, http.StatusOK)
 	}
-	bodyBytes, _ := base64.StdEncoding.DecodeString(exitResp.Body)
-	if string(bodyBytes) != destBody {
-		t.Fatalf("body = %q, want %q", bodyBytes, destBody)
+	if string(exitResp.Body) != destBody {
+		t.Fatalf("body = %q, want %q", exitResp.Body, destBody)
 	}
 	if exitResp.Headers["Content-Type"] != "application/json" {
 		t.Fatalf("Content-Type = %q, want application/json", exitResp.Headers["Content-Type"])
@@ -152,6 +148,13 @@ func TestFullCircuitWithPostBody(t *testing.T) {
 	exitKey := randomIntegrationKey(t)
 
 	dest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		if !bytes.Equal(gotBody, requestBody) {
+			t.Fatalf("destination body = %q, want %q", gotBody, requestBody)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(responseBody)
 	}))
@@ -184,12 +187,12 @@ func TestFullCircuitWithPostBody(t *testing.T) {
 
 	guardCT, err := BuildOnion(
 		guardKey, relayKey, exitKey,
-		onion.ExitLayer{
-			URL:     dest.URL,
-			Method:  http.MethodPost,
-			Headers: map[string]string{"Content-Type": "application/json"},
-			Body:    base64.StdEncoding.EncodeToString(requestBody),
-		},
+			onion.ExitLayer{
+				URL:     dest.URL,
+				Method:  http.MethodPost,
+				Headers: map[string]string{"Content-Type": "application/json"},
+				Body:    requestBody,
+			},
 		addr(relaySrv), addr(exitSrv),
 	)
 	if err != nil {
@@ -203,17 +206,15 @@ func TestFullCircuitWithPostBody(t *testing.T) {
 		t.Fatalf("SendOnion: %v", err)
 	}
 
-	payload, _ := base64.StdEncoding.DecodeString(onionResp.Payload)
-	exitResp, err := DecryptResponse(guardKey, relayKey, exitKey, payload)
+	exitResp, err := DecryptResponse(guardKey, relayKey, exitKey, onionResp.Payload)
 	if err != nil {
 		t.Fatalf("DecryptResponse: %v", err)
 	}
 	if exitResp.StatusCode != http.StatusOK {
 		t.Fatalf("statusCode = %d, want %d", exitResp.StatusCode, http.StatusOK)
 	}
-	got, _ := base64.StdEncoding.DecodeString(exitResp.Body)
-	if string(got) != string(responseBody) {
-		t.Fatalf("body = %q, want %q", got, responseBody)
+	if string(exitResp.Body) != string(responseBody) {
+		t.Fatalf("body = %q, want %q", exitResp.Body, responseBody)
 	}
 }
 
@@ -268,8 +269,7 @@ func TestFullCircuitNon200PropagatesThrough(t *testing.T) {
 		t.Fatalf("SendOnion: %v", err)
 	}
 
-	payload, _ := base64.StdEncoding.DecodeString(onionResp.Payload)
-	exitResp, err := DecryptResponse(guardKey, relayKey, exitKey, payload)
+	exitResp, err := DecryptResponse(guardKey, relayKey, exitKey, onionResp.Payload)
 	if err != nil {
 		t.Fatalf("DecryptResponse: %v", err)
 	}
@@ -278,9 +278,8 @@ func TestFullCircuitNon200PropagatesThrough(t *testing.T) {
 	if exitResp.StatusCode != http.StatusTeapot {
 		t.Fatalf("statusCode = %d, want %d", exitResp.StatusCode, http.StatusTeapot)
 	}
-	body, _ := base64.StdEncoding.DecodeString(exitResp.Body)
-	if !strings.Contains(string(body), "teapot") {
-		t.Fatalf("body = %q, should contain 'teapot'", body)
+	if !strings.Contains(string(exitResp.Body), "teapot") {
+		t.Fatalf("body = %q, should contain 'teapot'", exitResp.Body)
 	}
 }
 
@@ -350,16 +349,14 @@ func TestFullCircuitMultipleCircuits(t *testing.T) {
 			t.Fatalf("SendOnion %s: %v", tc.circuitID, err)
 		}
 
-		raw, _ := base64.StdEncoding.DecodeString(onionResp.Payload)
-		exitResp, err := DecryptResponse(gKey, rKey, eKey, raw)
-		if err != nil {
-			t.Fatalf("DecryptResponse %s: %v", tc.circuitID, err)
-		}
+			exitResp, err := DecryptResponse(gKey, rKey, eKey, onionResp.Payload)
+			if err != nil {
+				t.Fatalf("DecryptResponse %s: %v", tc.circuitID, err)
+			}
 
-		got, _ := base64.StdEncoding.DecodeString(exitResp.Body)
-		if string(got) != tc.destBody {
-			t.Fatalf("%s body = %q, want %q", tc.circuitID, got, tc.destBody)
-		}
+			if string(exitResp.Body) != tc.destBody {
+				t.Fatalf("%s body = %q, want %q", tc.circuitID, exitResp.Body, tc.destBody)
+			}
 		log.Printf("[client] %s verified: body matches destination", tc.circuitID)
 	}
 }
@@ -503,17 +500,14 @@ func TestSetupCircuitIntegration(t *testing.T) {
 		t.Fatalf("SendOnion: %v", err)
 	}
 
-	raw, _ := base64.StdEncoding.DecodeString(onionResp.Payload)
-	exitResp, err := DecryptResponse(gKey, rKey, eKey, raw)
+	exitResp, err := DecryptResponse(gKey, rKey, eKey, onionResp.Payload)
 	if err != nil {
 		t.Fatalf("DecryptResponse: %v", err)
 	}
 	if exitResp.StatusCode != http.StatusOK {
 		t.Fatalf("statusCode = %d, want 200", exitResp.StatusCode)
 	}
-	body, _ := base64.StdEncoding.DecodeString(exitResp.Body)
-	if string(body) != destBody {
-		t.Fatalf("body = %q, want %q", body, destBody)
+	if string(exitResp.Body) != destBody {
+		t.Fatalf("body = %q, want %q", exitResp.Body, destBody)
 	}
 }
-

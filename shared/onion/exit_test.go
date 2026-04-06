@@ -45,7 +45,7 @@ func TestExitHandleOnionSuccess(t *testing.T) {
 
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "e1",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -59,8 +59,7 @@ func TestExitHandleOnionSuccess(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	// Relay/client decrypts with exit key to get ExitResponse.
-	respCT, _ := base64.StdEncoding.DecodeString(resp.Payload)
-	plaintext, err := Decrypt(key, respCT)
+	plaintext, err := Decrypt(key, resp.Payload)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}
@@ -72,9 +71,8 @@ func TestExitHandleOnionSuccess(t *testing.T) {
 	if exitResp.StatusCode != http.StatusOK {
 		t.Fatalf("statusCode = %d, want %d", exitResp.StatusCode, http.StatusOK)
 	}
-	bodyBytes, _ := base64.StdEncoding.DecodeString(exitResp.Body)
-	if string(bodyBytes) != "destination response" {
-		t.Fatalf("body = %q, want %q", bodyBytes, "destination response")
+	if string(exitResp.Body) != "destination response" {
+		t.Fatalf("body = %q, want %q", exitResp.Body, "destination response")
 	}
 	if exitResp.Headers["Content-Type"] != "text/plain" {
 		t.Fatalf("Content-Type = %q, want text/plain", exitResp.Headers["Content-Type"])
@@ -97,7 +95,7 @@ func TestExitHandleOnionWithBody(t *testing.T) {
 		URL:    dest.URL,
 		Method: http.MethodPost,
 		Headers: map[string]string{"Content-Type": "application/json"},
-		Body:   base64.StdEncoding.EncodeToString(reqBody),
+		Body:   reqBody,
 	}
 	layerJSON, _ := json.Marshal(layer)
 	ct, _ := Encrypt(key, layerJSON)
@@ -108,7 +106,7 @@ func TestExitHandleOnionWithBody(t *testing.T) {
 
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "e2",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -139,7 +137,7 @@ func TestExitHandleOnionNon200Propagated(t *testing.T) {
 
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "e3",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -153,8 +151,7 @@ func TestExitHandleOnionNon200Propagated(t *testing.T) {
 	var resp OnionResponse
 	json.NewDecoder(w.Body).Decode(&resp)
 
-	respCT, _ := base64.StdEncoding.DecodeString(resp.Payload)
-	plaintext, err := Decrypt(key, respCT)
+	plaintext, err := Decrypt(key, resp.Payload)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}
@@ -183,7 +180,7 @@ func TestExitHandleOnionDestinationUnreachable(t *testing.T) {
 
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "e4",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -196,7 +193,7 @@ func TestExitHandleOnionDestinationUnreachable(t *testing.T) {
 // TestExitHandleOnionUnknownCircuit verifies 401 for unregistered circuits.
 func TestExitHandleOnionUnknownCircuit(t *testing.T) {
 	h := NewExitHandler(NewKeyStore(), http.DefaultClient)
-	body, _ := json.Marshal(OnionRequest{CircuitID: "unknown", Payload: "abc"})
+	body, _ := json.Marshal(OnionRequest{CircuitID: "unknown", Payload: []byte("abc")})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleOnion(w, r)
@@ -214,7 +211,7 @@ func TestExitHandleOnionDecryptionFailure(t *testing.T) {
 	h := NewExitHandler(ks, http.DefaultClient)
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "e5",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -234,7 +231,7 @@ func TestExitHandleOnionInvalidExitLayer(t *testing.T) {
 	h := NewExitHandler(ks, http.DefaultClient)
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "e6",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -257,7 +254,7 @@ func TestExitHandleOnionMissingURLOrMethod(t *testing.T) {
 	h := NewExitHandler(ks, http.DefaultClient)
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "e7",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -324,7 +321,7 @@ func TestExitHandleOnionTimeout(t *testing.T) {
 
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "e8",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 
 	// Use a background request so the slow server's context cancel doesn't affect us.
@@ -354,7 +351,7 @@ func TestExitHandleOnionInvalidURL(t *testing.T) {
 	h := NewExitHandler(ks, http.DefaultClient)
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "e9",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -363,4 +360,3 @@ func TestExitHandleOnionInvalidURL(t *testing.T) {
 		t.Fatalf("status = %d, want 400 or 502 for invalid URL", w.Code)
 	}
 }
-

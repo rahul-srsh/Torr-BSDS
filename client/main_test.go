@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
@@ -17,8 +16,8 @@ import (
 	onion "github.com/rahul-srsh/Torr-BSDS/shared/onion"
 )
 
-// TestBuildOnionLayerStructure verifies each onion layer can be peeled by the
-// correct node, and that each node sees only the next hop — not the destination.
+// TestBuildOnionLayerStructure verifies the client wraps exactly three layers and
+// that each layer carries the next hop plus the raw inner ciphertext bytes.
 func TestBuildOnionLayerStructure(t *testing.T) {
 	guardKey := randomClientKey(t)
 	relayKey := randomClientKey(t)
@@ -26,7 +25,12 @@ func TestBuildOnionLayerStructure(t *testing.T) {
 
 	relayAddr := "10.0.0.2:8082"
 	exitAddr := "10.0.0.3:8083"
-	exitLayer := onion.ExitLayer{URL: "https://example.com/api", Method: "GET"}
+	requestBody := []byte(`{"hello":"world"}`)
+	exitLayer := onion.ExitLayer{
+		URL:    "https://example.com/api",
+		Method: "POST",
+		Body:   requestBody,
+	}
 
 	guardCT, err := BuildOnion(guardKey, relayKey, exitKey, exitLayer, relayAddr, exitAddr)
 	if err != nil {
@@ -45,30 +49,35 @@ func TestBuildOnionLayerStructure(t *testing.T) {
 	}
 
 	// Relay peels its layer → sees exitAddr, not the destination.
-	relayCT, _ := base64.StdEncoding.DecodeString(guardLayer.Payload)
-	relayPlain, err := onion.Decrypt(relayKey, relayCT)
+	relayPlain, err := onion.Decrypt(relayKey, guardLayer.Payload)
 	if err != nil {
 		t.Fatalf("decrypt relay layer: %v", err)
 	}
 	var relayLayer onion.Layer
-	json.Unmarshal(relayPlain, &relayLayer)
+	if err := json.Unmarshal(relayPlain, &relayLayer); err != nil {
+		t.Fatalf("unmarshal relay layer: %v", err)
+	}
 	if relayLayer.NextHop != exitAddr {
 		t.Fatalf("relay nextHop = %q, want %q", relayLayer.NextHop, exitAddr)
 	}
 
 	// Exit peels its layer → sees the URL and method.
-	exitCT, _ := base64.StdEncoding.DecodeString(relayLayer.Payload)
-	exitPlain, err := onion.Decrypt(exitKey, exitCT)
+	exitPlain, err := onion.Decrypt(exitKey, relayLayer.Payload)
 	if err != nil {
 		t.Fatalf("decrypt exit layer: %v", err)
 	}
 	var decryptedExit onion.ExitLayer
-	json.Unmarshal(exitPlain, &decryptedExit)
+	if err := json.Unmarshal(exitPlain, &decryptedExit); err != nil {
+		t.Fatalf("unmarshal exit layer: %v", err)
+	}
 	if decryptedExit.URL != exitLayer.URL {
 		t.Fatalf("exit URL = %q, want %q", decryptedExit.URL, exitLayer.URL)
 	}
 	if decryptedExit.Method != exitLayer.Method {
 		t.Fatalf("exit method = %q, want %q", decryptedExit.Method, exitLayer.Method)
+	}
+	if !bytes.Equal(decryptedExit.Body, requestBody) {
+		t.Fatalf("exit body = %q, want %q", decryptedExit.Body, requestBody)
 	}
 }
 
@@ -82,7 +91,7 @@ func TestDecryptResponseRoundTrip(t *testing.T) {
 	// Simulate what each node produces on the return path.
 	exitResp := onion.ExitResponse{
 		StatusCode: 200,
-		Body:       base64.StdEncoding.EncodeToString([]byte(`{"hello":"world"}`)),
+		Body:       []byte(`{"hello":"world"}`),
 	}
 	exitRespJSON, _ := json.Marshal(exitResp)
 
@@ -100,9 +109,8 @@ func TestDecryptResponseRoundTrip(t *testing.T) {
 	if result.StatusCode != 200 {
 		t.Fatalf("statusCode = %d, want 200", result.StatusCode)
 	}
-	body, _ := base64.StdEncoding.DecodeString(result.Body)
-	if !bytes.Equal(body, []byte(`{"hello":"world"}`)) {
-		t.Fatalf("body = %q, want {\"hello\":\"world\"}", body)
+	if !bytes.Equal(result.Body, []byte(`{"hello":"world"}`)) {
+		t.Fatalf("body = %q, want {\"hello\":\"world\"}", result.Body)
 	}
 }
 
@@ -256,4 +264,3 @@ func nodeRecordFromURL(t *testing.T, id, nodeType, rawURL, pubPEM string) NodeRe
 		NodeID: id, NodeType: nodeType, Host: u.Hostname(), Port: port, PublicKey: pubPEM,
 	}}
 }
-

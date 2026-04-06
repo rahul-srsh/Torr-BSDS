@@ -32,19 +32,18 @@ func TestRelayOnionRoundTrip(t *testing.T) {
 		}
 		if req.CircuitID != "relay-test" {
 			t.Errorf("exit: circuitId = %q, want relay-test", req.CircuitID)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(onion.OnionResponse{
-			Payload: base64.StdEncoding.EncodeToString(exitEncryptedBytes),
-		})
-	}))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(onion.OnionResponse{
+				Payload: exitEncryptedBytes,
+			})
+		}))
 	defer exit.Close()
 
 	exitAddr := strings.TrimPrefix(exit.URL, "http://")
 
 	// Build relay layer: after decryption the relay sees nextHop=exit and inner payload.
-	innerPayload := base64.StdEncoding.EncodeToString([]byte("exit-encrypted-layer"))
-	layer := onion.Layer{NextHop: exitAddr, Payload: innerPayload}
+	layer := onion.Layer{NextHop: exitAddr, Payload: []byte("exit-encrypted-layer")}
 	layerJSON, _ := json.Marshal(layer)
 
 	ct, err := onion.Encrypt(relayKey, layerJSON)
@@ -58,7 +57,7 @@ func TestRelayOnionRoundTrip(t *testing.T) {
 
 	body, _ := json.Marshal(onion.OnionRequest{
 		CircuitID: "relay-test",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	// RemoteAddr simulates the guard node's address.
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
@@ -74,8 +73,7 @@ func TestRelayOnionRoundTrip(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	// Guard (or client in this test) peels the relay layer.
-	respCT, _ := base64.StdEncoding.DecodeString(resp.Payload)
-	plaintext, err := onion.Decrypt(relayKey, respCT)
+	plaintext, err := onion.Decrypt(relayKey, resp.Payload)
 	if err != nil {
 		t.Fatalf("Decrypt relay layer: %v", err)
 	}
@@ -110,7 +108,7 @@ func TestRelayKeyEndpoint(t *testing.T) {
 // TestRelayUnknownCircuit verifies the relay rejects requests with no registered key.
 func TestRelayUnknownCircuit(t *testing.T) {
 	h := onion.NewHandler(onion.NewKeyStore(), http.DefaultClient, "relay")
-	body, _ := json.Marshal(onion.OnionRequest{CircuitID: "unknown", Payload: "abc"})
+	body, _ := json.Marshal(onion.OnionRequest{CircuitID: "unknown", Payload: []byte("abc")})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleOnion(w, r)
@@ -129,14 +127,14 @@ func TestRelayNextHopUnreachable(t *testing.T) {
 	deadAddr := strings.TrimPrefix(dead.URL, "http://")
 	dead.Close()
 
-	layer := onion.Layer{NextHop: deadAddr, Payload: base64.StdEncoding.EncodeToString([]byte("inner"))}
+	layer := onion.Layer{NextHop: deadAddr, Payload: []byte("inner")}
 	layerJSON, _ := json.Marshal(layer)
 	ct, _ := onion.Encrypt(key, layerJSON)
 
 	h := onion.NewHandler(ks, http.DefaultClient, "relay")
 	body, _ := json.Marshal(onion.OnionRequest{
 		CircuitID: "r1",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()

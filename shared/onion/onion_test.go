@@ -213,18 +213,16 @@ func TestHandleOnionSuccess(t *testing.T) {
 		json.NewDecoder(r.Body).Decode(&req)
 		if req.CircuitID != "test-circuit" {
 			t.Errorf("circuitId = %q, want test-circuit", req.CircuitID)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(OnionResponse{
-			Payload: base64.StdEncoding.EncodeToString(exitEncryptedBytes),
-		})
-	}))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(OnionResponse{
+				Payload: exitEncryptedBytes,
+			})
+		}))
 	defer nextHop.Close()
 
 	nextAddr := strings.TrimPrefix(nextHop.URL, "http://")
-	innerPayload := base64.StdEncoding.EncodeToString([]byte("inner-encrypted-data"))
-
-	layer := Layer{NextHop: nextAddr, Payload: innerPayload}
+	layer := Layer{NextHop: nextAddr, Payload: []byte("inner-encrypted-data")}
 	layerJSON, _ := json.Marshal(layer)
 	ct, err := Encrypt(key, layerJSON)
 	if err != nil {
@@ -237,7 +235,7 @@ func TestHandleOnionSuccess(t *testing.T) {
 
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "test-circuit",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -250,8 +248,7 @@ func TestHandleOnionSuccess(t *testing.T) {
 	var resp OnionResponse
 	json.NewDecoder(w.Body).Decode(&resp)
 
-	respCT, _ := base64.StdEncoding.DecodeString(resp.Payload)
-	plaintext, err := Decrypt(key, respCT)
+	plaintext, err := Decrypt(key, resp.Payload)
 	if err != nil {
 		t.Fatalf("Decrypt response: %v", err)
 	}
@@ -283,8 +280,8 @@ func TestHandleOnionInvalidJSON(t *testing.T) {
 func TestHandleOnionMissingFields(t *testing.T) {
 	h := NewHandler(NewKeyStore(), http.DefaultClient, "test")
 	cases := []OnionRequest{
-		{Payload: "abc"},    // missing circuitId
-		{CircuitID: "c1"},   // missing payload
+		{Payload: []byte("abc")}, // missing circuitId
+		{CircuitID: "c1"},        // missing payload
 	}
 	for _, req := range cases {
 		body, _ := json.Marshal(req)
@@ -299,7 +296,7 @@ func TestHandleOnionMissingFields(t *testing.T) {
 
 func TestHandleOnionUnknownCircuit(t *testing.T) {
 	h := NewHandler(NewKeyStore(), http.DefaultClient, "test")
-	body, _ := json.Marshal(OnionRequest{CircuitID: "unknown", Payload: "abc"})
+	body, _ := json.Marshal(OnionRequest{CircuitID: "unknown", Payload: []byte("abc")})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleOnion(w, r)
@@ -316,7 +313,7 @@ func TestHandleOnionDecryptionFailure(t *testing.T) {
 	h := NewHandler(ks, http.DefaultClient, "test")
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "c1",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -335,7 +332,7 @@ func TestHandleOnionInvalidLayerFormat(t *testing.T) {
 	h := NewHandler(ks, http.DefaultClient, "test")
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "c1",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -354,14 +351,14 @@ func TestHandleOnionNextHopUnreachable(t *testing.T) {
 	deadAddr := strings.TrimPrefix(dead.URL, "http://")
 	dead.Close()
 
-	layer := Layer{NextHop: deadAddr, Payload: base64.StdEncoding.EncodeToString([]byte("inner"))}
+	layer := Layer{NextHop: deadAddr, Payload: []byte("inner")}
 	layerJSON, _ := json.Marshal(layer)
 	ct, _ := Encrypt(key, layerJSON)
 
 	h := NewHandler(ks, http.DefaultClient, "test")
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "c1",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -383,7 +380,7 @@ func TestHandleOnionNextHopReturnsError(t *testing.T) {
 
 	layer := Layer{
 		NextHop: strings.TrimPrefix(nextHop.URL, "http://"),
-		Payload: base64.StdEncoding.EncodeToString([]byte("inner")),
+		Payload: []byte("inner"),
 	}
 	layerJSON, _ := json.Marshal(layer)
 	ct, _ := Encrypt(key, layerJSON)
@@ -391,7 +388,7 @@ func TestHandleOnionNextHopReturnsError(t *testing.T) {
 	h := NewHandler(ks, http.DefaultClient, "test")
 	body, _ := json.Marshal(OnionRequest{
 		CircuitID: "c1",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()

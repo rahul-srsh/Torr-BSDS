@@ -125,10 +125,10 @@ func BuildOnion(guardKey, relayKey, exitKey []byte, exitLayer onion.ExitLayer, r
 		return nil, fmt.Errorf("encrypt exit layer: %w", err)
 	}
 
-	relayLayerJSON, err := json.Marshal(onion.Layer{
-		NextHop: exitAddr,
-		Payload: base64.StdEncoding.EncodeToString(exitCT),
-	})
+		relayLayerJSON, err := json.Marshal(onion.Layer{
+			NextHop: exitAddr,
+			Payload: exitCT,
+		})
 	if err != nil {
 		return nil, fmt.Errorf("marshal relay layer: %w", err)
 	}
@@ -137,10 +137,10 @@ func BuildOnion(guardKey, relayKey, exitKey []byte, exitLayer onion.ExitLayer, r
 		return nil, fmt.Errorf("encrypt relay layer: %w", err)
 	}
 
-	guardLayerJSON, err := json.Marshal(onion.Layer{
-		NextHop: relayAddr,
-		Payload: base64.StdEncoding.EncodeToString(relayCT),
-	})
+		guardLayerJSON, err := json.Marshal(onion.Layer{
+			NextHop: relayAddr,
+			Payload: relayCT,
+		})
 	if err != nil {
 		return nil, fmt.Errorf("marshal guard layer: %w", err)
 	}
@@ -204,7 +204,7 @@ func RegisterKey(client *http.Client, nodeURL, circuitID string, key []byte) err
 func SendOnion(client *http.Client, guardURL, circuitID string, payload []byte) (*onion.OnionResponse, error) {
 	body, err := json.Marshal(onion.OnionRequest{
 		CircuitID: circuitID,
-		Payload:   base64.StdEncoding.EncodeToString(payload),
+		Payload:   payload,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal onion request: %w", err)

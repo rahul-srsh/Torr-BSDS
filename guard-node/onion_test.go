@@ -22,7 +22,7 @@ func TestGuardOnionRoundTrip(t *testing.T) {
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(onion.OnionResponse{
-			Payload: base64.StdEncoding.EncodeToString(relayPayload),
+			Payload: relayPayload,
 		})
 	}))
 	defer relay.Close()
@@ -31,7 +31,7 @@ func TestGuardOnionRoundTrip(t *testing.T) {
 
 	layer := onion.Layer{
 		NextHop: relayAddr,
-		Payload: base64.StdEncoding.EncodeToString([]byte("inner")),
+		Payload: []byte("inner"),
 	}
 	layerJSON, _ := json.Marshal(layer)
 	ct, err := onion.Encrypt(key, layerJSON)
@@ -45,7 +45,7 @@ func TestGuardOnionRoundTrip(t *testing.T) {
 
 	body, _ := json.Marshal(onion.OnionRequest{
 		CircuitID: "g1",
-		Payload:   base64.StdEncoding.EncodeToString(ct),
+		Payload:   ct,
 	})
 	r := httptest.NewRequest(http.MethodPost, "/onion", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -58,8 +58,7 @@ func TestGuardOnionRoundTrip(t *testing.T) {
 	var resp onion.OnionResponse
 	json.NewDecoder(w.Body).Decode(&resp)
 
-	respCT, _ := base64.StdEncoding.DecodeString(resp.Payload)
-	plaintext, err := onion.Decrypt(key, respCT)
+	plaintext, err := onion.Decrypt(key, resp.Payload)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}

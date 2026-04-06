@@ -4,7 +4,6 @@ package main
 // Skipped unless DIRECTORY_SERVER_URL and GUARD_PUBLIC_IP are set.
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -51,7 +50,7 @@ func TestLiveCircuitEndToEnd(t *testing.T) {
 		URL:    echoURL + "/echo",
 		Method: http.MethodPost,
 		Headers: map[string]string{"Content-Type": "application/json"},
-		Body:   base64.StdEncoding.EncodeToString([]byte(`{"message":"hello from onion client"}`)),
+		Body:   []byte(`{"message":"hello from onion client"}`),
 	}
 	relayAddr := fmt.Sprintf("%s:%d", circuit.Relay.Host, circuit.Relay.Port)
 	exitAddr := fmt.Sprintf("%s:%d", circuit.Exit.Host, circuit.Exit.Port)
@@ -73,11 +72,7 @@ func TestLiveCircuitEndToEnd(t *testing.T) {
 	t.Logf("response received in %s", elapsed)
 
 	// ── Step 5: Decrypt 3-layer response ─────────────────────────────────────
-	raw, err := base64.StdEncoding.DecodeString(onionResp.Payload)
-	if err != nil {
-		t.Fatalf("decode payload: %v", err)
-	}
-	exitResp, err := DecryptResponse(guardKey, relayKey, exitKey, raw)
+	exitResp, err := DecryptResponse(guardKey, relayKey, exitKey, onionResp.Payload)
 	if err != nil {
 		t.Fatalf("DecryptResponse: %v", err)
 	}
@@ -86,9 +81,8 @@ func TestLiveCircuitEndToEnd(t *testing.T) {
 		t.Fatalf("exit status = %d, want 200", exitResp.StatusCode)
 	}
 
-	body, _ := base64.StdEncoding.DecodeString(exitResp.Body)
 	var pretty map[string]any
-	if json.Unmarshal(body, &pretty) == nil {
+	if json.Unmarshal(exitResp.Body, &pretty) == nil {
 		out, _ := json.MarshalIndent(pretty, "", "  ")
 		t.Logf("echo response:\n%s", out)
 	}

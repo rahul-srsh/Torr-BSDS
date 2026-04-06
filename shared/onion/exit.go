@@ -15,7 +15,7 @@ type ExitLayer struct {
 	URL     string            `json:"url"`
 	Method  string            `json:"method"`
 	Headers map[string]string `json:"headers,omitempty"`
-	Body    string            `json:"body,omitempty"` // base64-encoded request body
+	Body    []byte            `json:"body,omitempty"` // plaintext request body
 }
 
 // ExitResponse is the HTTP response from the destination, returned encrypted
@@ -23,7 +23,7 @@ type ExitLayer struct {
 type ExitResponse struct {
 	StatusCode int               `json:"statusCode"`
 	Headers    map[string]string `json:"headers,omitempty"`
-	Body       string            `json:"body,omitempty"` // base64-encoded response body
+	Body       []byte            `json:"body,omitempty"` // plaintext response body
 }
 
 // ExitHandler provides POST /key and POST /onion for the exit node.
@@ -71,7 +71,7 @@ func (h *ExitHandler) HandleKey(w http.ResponseWriter, r *http.Request) {
 
 // HandleOnion decrypts the final onion layer, executes the plaintext HTTP request,
 // encrypts the response with the session key, and returns it through the circuit.
-// POST /onion  {"circuitId":"…","payload":"<base64-ciphertext>"}
+// POST /onion  {"circuitId":"…","payload":"<ciphertext-bytes>"}
 func (h *ExitHandler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -84,7 +84,7 @@ func (h *ExitHandler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	if req.CircuitID == "" || req.Payload == "" {
+	if req.CircuitID == "" || len(req.Payload) == 0 {
 		http.Error(w, "circuitId and payload are required", http.StatusBadRequest)
 		return
 	}
@@ -96,14 +96,7 @@ func (h *ExitHandler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ciphertext, err := base64.StdEncoding.DecodeString(req.Payload)
-	if err != nil {
-		log.Printf("[exit] invalid payload encoding for circuit %s: %v", req.CircuitID, err)
-		http.Error(w, "payload must be valid base64", http.StatusBadRequest)
-		return
-	}
-
-	plaintext, err := Decrypt(key, ciphertext)
+	plaintext, err := Decrypt(key, req.Payload)
 	if err != nil {
 		log.Printf("[exit] decryption failed for circuit %s: %v", req.CircuitID, err)
 		http.Error(w, "decryption failed", http.StatusBadRequest)
@@ -126,13 +119,8 @@ func (h *ExitHandler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 
 	// Build the outbound request to the destination.
 	var bodyReader io.Reader
-	if layer.Body != "" {
-		bodyBytes, err := base64.StdEncoding.DecodeString(layer.Body)
-		if err != nil {
-			http.Error(w, "invalid request body encoding", http.StatusBadRequest)
-			return
-		}
-		bodyReader = bytes.NewReader(bodyBytes)
+	if len(layer.Body) > 0 {
+		bodyReader = bytes.NewReader(layer.Body)
 	}
 
 	destReq, err := http.NewRequestWithContext(r.Context(), layer.Method, layer.URL, bodyReader)
@@ -171,7 +159,7 @@ func (h *ExitHandler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 	exitResp := ExitResponse{
 		StatusCode: destResp.StatusCode,
 		Headers:    respHeaders,
-		Body:       base64.StdEncoding.EncodeToString(respBody),
+		Body:       respBody,
 	}
 	exitRespJSON, err := json.Marshal(exitResp)
 	if err != nil {
@@ -189,6 +177,6 @@ func (h *ExitHandler) HandleOnion(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(OnionResponse{
-		Payload: base64.StdEncoding.EncodeToString(encrypted),
+		Payload: encrypted,
 	})
 }
