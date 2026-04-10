@@ -8,12 +8,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	onion "github.com/rahul-srsh/Torr-BSDS/shared/onion"
 )
+
+// maxCircuitAttempts is the number of times ExecuteRequestWithHops will fetch
+// a fresh circuit and retry before giving up. A setup or send failure means a
+// node in the selected circuit is unhealthy; a new circuit may avoid it.
+const maxCircuitAttempts = 3
 
 // NodeRegistration mirrors the directory server's registration payload.
 type NodeRegistration struct {
@@ -45,39 +51,55 @@ func ExecuteRequest(client *http.Client, directoryURL, circuitID string, exitLay
 
 // ExecuteRequestWithHops runs the full client flow for the requested hop count:
 // circuit lookup, key exchange, onion wrapping, send via guard, and response unwrap.
+//
+// A setup or send failure indicates a node in the selected circuit is unhealthy.
+// ExecuteRequestWithHops fetches a fresh circuit and retries up to maxCircuitAttempts
+// times before returning an error. Directory, build, and decrypt failures are not
+// retried: they are not circuit-quality issues and a new circuit will not help.
 func ExecuteRequestWithHops(client *http.Client, directoryURL, circuitID string, exitLayer onion.ExitLayer, hops int) (*onion.ExitResponse, error) {
 	if err := validateHops(hops); err != nil {
 		return nil, err
 	}
 
-	circuit, err := GetCircuitWithHops(client, directoryURL, hops)
-	if err != nil {
-		return nil, fmt.Errorf("get circuit from directory server: %w", err)
+	var lastErr error
+	for attempt := 1; attempt <= maxCircuitAttempts; attempt++ {
+		if attempt > 1 {
+			log.Printf("[client] circuit attempt %d/%d failed (%v); fetching fresh circuit", attempt-1, maxCircuitAttempts, lastErr)
+		}
+
+		circuit, err := GetCircuitWithHops(client, directoryURL, hops)
+		if err != nil {
+			return nil, fmt.Errorf("get circuit from directory server: %w", err)
+		}
+
+		guardKey, relayKey, exitKey, err := SetupCircuitWithHops(client, circuitID, circuit, hops)
+		if err != nil {
+			lastErr = fmt.Errorf("establish session keys: %w", err)
+			continue
+		}
+
+		relayAddr, exitAddr := circuitHopAddresses(circuit, hops)
+		payload, err := BuildOnionWithHops(guardKey, relayKey, exitKey, exitLayer, relayAddr, exitAddr, hops)
+		if err != nil {
+			return nil, fmt.Errorf("build onion payload: %w", err)
+		}
+
+		guardURL := fmt.Sprintf("http://%s:%d", circuit.Guard.Host, circuit.Guard.Port)
+		onionResp, err := SendOnion(client, guardURL, circuitID, payload)
+		if err != nil {
+			lastErr = fmt.Errorf("send onion request via guard %s: %w", circuit.Guard.NodeID, err)
+			continue
+		}
+
+		exitResp, err := DecryptResponseWithHops(guardKey, relayKey, exitKey, onionResp.Payload, hops)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt circuit response: %w", err)
+		}
+
+		return exitResp, nil
 	}
 
-	guardKey, relayKey, exitKey, err := SetupCircuitWithHops(client, circuitID, circuit, hops)
-	if err != nil {
-		return nil, fmt.Errorf("establish session keys: %w", err)
-	}
-
-	relayAddr, exitAddr := circuitHopAddresses(circuit, hops)
-	payload, err := BuildOnionWithHops(guardKey, relayKey, exitKey, exitLayer, relayAddr, exitAddr, hops)
-	if err != nil {
-		return nil, fmt.Errorf("build onion payload: %w", err)
-	}
-
-	guardURL := fmt.Sprintf("http://%s:%d", circuit.Guard.Host, circuit.Guard.Port)
-	onionResp, err := SendOnion(client, guardURL, circuitID, payload)
-	if err != nil {
-		return nil, fmt.Errorf("send onion request via guard %s: %w", circuit.Guard.NodeID, err)
-	}
-
-	exitResp, err := DecryptResponseWithHops(guardKey, relayKey, exitKey, onionResp.Payload, hops)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt circuit response: %w", err)
-	}
-
-	return exitResp, nil
+	return nil, fmt.Errorf("all %d circuit attempts failed: %w", maxCircuitAttempts, lastErr)
 }
 
 // GetCircuit calls the directory server's GET /circuit endpoint and returns the circuit.

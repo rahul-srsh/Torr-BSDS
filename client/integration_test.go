@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -665,10 +666,87 @@ func TestRunClientUnreachableNodeReturnsClearError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected runClient to fail when a node is unreachable")
 	}
+	// After maxCircuitAttempts the error is wrapped as "all N circuit attempts failed: ..."
+	// but the inner causes from the last attempt are still present.
 	if !strings.Contains(err.Error(), "establish session keys") {
 		t.Fatalf("error = %q, want session key setup context", err)
 	}
 	if !strings.Contains(err.Error(), "setup key for node g1") {
 		t.Fatalf("error = %q, want guard node context", err)
+	}
+}
+
+// TestExecuteRequestRetryOnBadCircuit verifies that when the first circuit's
+// /setup fails (unreachable guard), ExecuteRequestWithHops fetches a fresh
+// circuit and succeeds on the next attempt without surfacing an error.
+func TestExecuteRequestRetryOnBadCircuit(t *testing.T) {
+	const circuitID = "retry-circuit-1"
+	const destBody = `{"from":"retry"}`
+
+	goodGuardPriv, goodGuardPubPEM := genIntegrationKeyPair(t)
+	goodRelayPriv, goodRelayPubPEM := genIntegrationKeyPair(t)
+	goodExitPriv, goodExitPubPEM := genIntegrationKeyPair(t)
+
+	exitKS := onion.NewKeyStore()
+	exitH := onion.NewExitHandler(exitKS, http.DefaultClient)
+	exitSrv := nodeServerFull(t, exitH.HandleKey, exitH.HandleOnion, onion.HandleSetup(exitKS, goodExitPriv))
+
+	relayKS := onion.NewKeyStore()
+	relayH := onion.NewHandler(relayKS, http.DefaultClient, "relay")
+	relaySrv := nodeServerFull(t, relayH.HandleKey, relayH.HandleOnion, onion.HandleSetup(relayKS, goodRelayPriv))
+
+	guardKS := onion.NewKeyStore()
+	guardH := onion.NewHandler(guardKS, http.DefaultClient, "guard")
+	guardSrv := nodeServerFull(t, guardH.HandleKey, guardH.HandleOnion, onion.HandleSetup(guardKS, goodGuardPriv))
+
+	dest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(destBody))
+	}))
+	t.Cleanup(dest.Close)
+
+	// Directory: first call returns a dead guard (port 1), subsequent calls return healthy nodes.
+	var dirCallCount int32
+	dirSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/circuit" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if atomic.AddInt32(&dirCallCount, 1) == 1 {
+			_ = json.NewEncoder(w).Encode(CircuitResponse{
+				Guard: NodeRecord{NodeRegistration: NodeRegistration{
+					NodeID: "dead-guard", NodeType: "guard", Host: "127.0.0.1", Port: 1,
+					PublicKey: goodGuardPubPEM,
+				}},
+				Relay: nodeRecordForSrv(t, "r1", "relay", relaySrv, goodRelayPubPEM),
+				Exit:  nodeRecordForSrv(t, "e1", "exit", exitSrv, goodExitPubPEM),
+			})
+		} else {
+			_ = json.NewEncoder(w).Encode(CircuitResponse{
+				Guard: nodeRecordForSrv(t, "g1", "guard", guardSrv, goodGuardPubPEM),
+				Relay: nodeRecordForSrv(t, "r1", "relay", relaySrv, goodRelayPubPEM),
+				Exit:  nodeRecordForSrv(t, "e1", "exit", exitSrv, goodExitPubPEM),
+			})
+		}
+	}))
+	t.Cleanup(dirSrv.Close)
+
+	cfg := &clientConfig{
+		DirectoryURL:   dirSrv.URL,
+		DestinationURL: dest.URL,
+		Method:         http.MethodGet,
+		Hops:           3,
+		Timeout:        2 * time.Second,
+	}
+
+	var stdout bytes.Buffer
+	if err := runClient(cfg, &stdout); err != nil {
+		t.Fatalf("runClient: %v", err)
+	}
+	if stdout.String() != destBody {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), destBody)
+	}
+	if got := atomic.LoadInt32(&dirCallCount); got < 2 {
+		t.Fatalf("directory called %d times, want at least 2 (1 bad circuit + 1 good)", got)
 	}
 }
