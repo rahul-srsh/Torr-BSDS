@@ -1,0 +1,90 @@
+[2026-04-10 18:27:26,413] Rahuls-MacBook-Air/INFO/locust.main: Starting Locust 2.43.3
+[2026-04-10 18:27:26,415] Rahuls-MacBook-Air/INFO/locust.runners: Shape test starting.
+[2026-04-10 18:27:26,415] Rahuls-MacBook-Air/INFO/locust.runners: Shape worker starting
+[2026-04-10 18:27:26,415] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 10 users at 10.00 spawn rate
+[2026-04-10 18:27:26,415] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 10 users at a rate of 10.00 per second
+[2026-04-10 18:27:26,416] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 10} (10 total users)
+[2026-04-10 18:27:56,518] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 10 users, 24.1 rps, p95=920.0ms, err=0.00%
+[2026-04-10 18:27:56,519] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 20 users at 10.00 spawn rate
+[2026-04-10 18:27:56,520] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 20 users at a rate of 10.00 per second
+[2026-04-10 18:27:56,523] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 20} (20 total users)
+[2026-04-10 18:28:26,637] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 20 users, 43.0 rps, p95=930.0ms, err=0.00%
+[2026-04-10 18:28:26,638] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 30 users at 10.00 spawn rate
+[2026-04-10 18:28:26,638] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 30 users at a rate of 10.00 per second
+[2026-04-10 18:28:26,642] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 30} (30 total users)
+[2026-04-10 18:28:56,739] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 30 users, 62.4 rps, p95=920.0ms, err=0.00%
+[2026-04-10 18:28:56,740] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 40 users at 10.00 spawn rate
+[2026-04-10 18:28:56,740] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 40 users at a rate of 10.00 per second
+[2026-04-10 18:28:56,745] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 40} (40 total users)
+[2026-04-10 18:29:26,837] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 40 users, 76.9 rps, p95=960.0ms, err=0.00%
+[2026-04-10 18:29:26,837] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 50 users at 10.00 spawn rate
+[2026-04-10 18:29:26,837] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 50 users at a rate of 10.00 per second
+[2026-04-10 18:29:26,839] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 50} (50 total users)
+[2026-04-10 18:29:56,962] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 50 users, 78.3 rps, p95=1100.0ms, err=0.00%
+[2026-04-10 18:29:56,962] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 60 users at 10.00 spawn rate
+[2026-04-10 18:29:56,962] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 60 users at a rate of 10.00 per second
+[2026-04-10 18:29:56,966] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 60} (60 total users)
+[2026-04-10 18:30:27,095] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 60 users, 72.5 rps, p95=1300.0ms, err=0.00%
+[2026-04-10 18:30:27,095] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 70 users at 10.00 spawn rate
+[2026-04-10 18:30:27,096] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 70 users at a rate of 10.00 per second
+[2026-04-10 18:30:27,098] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 70} (70 total users)
+[2026-04-10 18:30:57,206] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 70 users, 81.5 rps, p95=1400.0ms, err=0.00%
+[2026-04-10 18:30:57,206] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 80 users at 10.00 spawn rate
+[2026-04-10 18:30:57,206] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 80 users at a rate of 10.00 per second
+[2026-04-10 18:30:57,207] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 80} (80 total users)
+[2026-04-10 18:31:27,339] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 80 users, 81.0 rps, p95=1600.0ms, err=0.00%
+[2026-04-10 18:31:27,339] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 90 users at 10.00 spawn rate
+[2026-04-10 18:31:27,339] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 90 users at a rate of 10.00 per second
+[2026-04-10 18:31:27,340] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 90} (90 total users)
+[2026-04-10 18:31:56,444] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 90 users, 74.0 rps, p95=1800.0ms, err=0.00%
+[2026-04-10 18:31:56,444] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 100 users at 10.00 spawn rate
+[2026-04-10 18:31:56,446] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 100 users at a rate of 10.00 per second
+[2026-04-10 18:31:56,449] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 100} (100 total users)
+[2026-04-10 18:32:26,604] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 100 users, 72.3 rps, p95=1900.0ms, err=0.00%
+[2026-04-10 18:32:26,605] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 110 users at 10.00 spawn rate
+[2026-04-10 18:32:26,606] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 110 users at a rate of 10.00 per second
+[2026-04-10 18:32:26,607] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 110} (110 total users)
+[2026-04-10 18:32:56,768] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 110 users, 73.4 rps, p95=2100.0ms, err=0.00%
+[2026-04-10 18:32:56,770] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 120 users at 10.00 spawn rate
+[2026-04-10 18:32:56,770] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 120 users at a rate of 10.00 per second
+[2026-04-10 18:32:56,778] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 120} (120 total users)
+[2026-04-10 18:33:26,892] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 120 users, 90.3 rps, p95=2300.0ms, err=0.00%
+[2026-04-10 18:33:26,894] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 130 users at 10.00 spawn rate
+[2026-04-10 18:33:26,894] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 130 users at a rate of 10.00 per second
+[2026-04-10 18:33:26,900] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 130} (130 total users)
+[2026-04-10 18:33:57,030] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 130 users, 71.0 rps, p95=2500.0ms, err=0.00%
+[2026-04-10 18:33:57,030] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 140 users at 10.00 spawn rate
+[2026-04-10 18:33:57,042] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 140 users at a rate of 10.00 per second
+[2026-04-10 18:33:57,044] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 140} (140 total users)
+[2026-04-10 18:34:27,171] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 140 users, 81.5 rps, p95=2600.0ms, err=0.00%
+[2026-04-10 18:34:27,171] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 150 users at 10.00 spawn rate
+[2026-04-10 18:34:27,172] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 150 users at a rate of 10.00 per second
+[2026-04-10 18:34:27,174] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 150} (150 total users)
+[2026-04-10 18:34:57,333] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 150 users, 55.1 rps, p95=2800.0ms, err=0.00%
+[2026-04-10 18:34:57,334] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 160 users at 10.00 spawn rate
+[2026-04-10 18:34:57,342] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 160 users at a rate of 10.00 per second
+[2026-04-10 18:34:57,344] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 160} (160 total users)
+[2026-04-10 18:35:26,491] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 160 users, 65.3 rps, p95=3000.0ms, err=0.00%
+[2026-04-10 18:35:26,491] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 170 users at 10.00 spawn rate
+[2026-04-10 18:35:26,492] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 170 users at a rate of 10.00 per second
+[2026-04-10 18:35:26,494] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 170} (170 total users)
+[2026-04-10 18:35:56,643] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 170 users, 86.6 rps, p95=3200.0ms, err=0.00%
+[2026-04-10 18:35:56,644] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 180 users at 10.00 spawn rate
+[2026-04-10 18:35:56,645] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 180 users at a rate of 10.00 per second
+[2026-04-10 18:35:56,649] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 180} (180 total users)
+[2026-04-10 18:36:26,794] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 180 users, 70.7 rps, p95=3400.0ms, err=0.00%
+[2026-04-10 18:36:26,795] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 190 users at 10.00 spawn rate
+[2026-04-10 18:36:26,795] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 190 users at a rate of 10.00 per second
+[2026-04-10 18:36:26,796] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 190} (190 total users)
+[2026-04-10 18:36:56,988] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] step ok: 190 users, 76.1 rps, p95=3800.0ms, err=0.00%
+[2026-04-10 18:36:56,989] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 200 users at 10.00 spawn rate
+[2026-04-10 18:36:56,989] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 200 users at a rate of 10.00 per second
+[2026-04-10 18:36:56,992] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"ThroughputScalingUser": 200} (200 total users)
+[2026-04-10 18:37:27,157] Rahuls-MacBook-Air/INFO/locust.runners: Shape test stopping
+[2026-04-10 18:37:27,212] Rahuls-MacBook-Air/INFO/locust.main: --run-time limit reached, shutting down
+[2026-04-10 18:37:27,212] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] max sustainable throughput: 76.1 rps at 190 users (p95=3800.0ms, relays=20)
+[2026-04-10 18:37:27,217] Rahuls-MacBook-Air/INFO/botocore.credentials: Found credentials in environment variables.
+[2026-04-10 18:37:27,876] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] uploaded steps to s3://hopvault-experiment-results-378591034789-us-west-2/experiment-2/relays-20/20260410T223727Z_steps.csv
+[2026-04-10 18:37:28,122] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] uploaded summary to s3://hopvault-experiment-results-378591034789-us-west-2/experiment-2/relays-20/20260410T223727Z_summary.json
+[2026-04-10 18:37:28,493] Rahuls-MacBook-Air/INFO/throughput_scaling: [exp2] uploaded locust stats to s3://hopvault-experiment-results-378591034789-us-west-2/experiment-2/relays-20/20260410T223727Z_locust_stats.csv
+[2026-04-10 18:37:28,497] Rahuls-MacBook-Air/INFO/locust.main: Shutting down (exit code 0)

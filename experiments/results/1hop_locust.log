@@ -1,0 +1,21 @@
+[2026-04-10 17:22:46,538] Rahuls-MacBook-Air/INFO/locust.main: Starting Locust 2.43.3
+[2026-04-10 17:22:46,541] Rahuls-MacBook-Air/INFO/locust.runners: Shape test starting.
+[2026-04-10 17:22:46,541] Rahuls-MacBook-Air/INFO/locust.runners: Shape worker starting
+[2026-04-10 17:22:46,541] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 10 users at 10.00 spawn rate
+[2026-04-10 17:22:46,541] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 10 users at a rate of 10.00 per second
+[2026-04-10 17:22:46,542] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"CircuitOneHopUser": 10} (10 total users)
+[2026-04-10 17:23:46,728] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 50 users at 50.00 spawn rate
+[2026-04-10 17:23:46,728] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 50 users at a rate of 50.00 per second
+[2026-04-10 17:23:46,733] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"CircuitOneHopUser": 50} (50 total users)
+[2026-04-10 17:24:46,956] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 100 users at 100.00 spawn rate
+[2026-04-10 17:24:46,956] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 100 users at a rate of 100.00 per second
+[2026-04-10 17:24:46,959] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"CircuitOneHopUser": 100} (100 total users)
+[2026-04-10 17:25:47,199] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 200 users at 200.00 spawn rate
+[2026-04-10 17:25:47,200] Rahuls-MacBook-Air/WARNING/locust.runners: Your selected spawn rate is very high (>100), and this is known to sometimes cause issues. Do you really need to ramp up that fast?
+[2026-04-10 17:25:47,200] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 200 users at a rate of 200.00 per second
+[2026-04-10 17:25:47,204] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"CircuitOneHopUser": 200} (200 total users)
+[2026-04-10 17:26:47,468] Rahuls-MacBook-Air/INFO/locust.runners: Shape test stopping
+[2026-04-10 17:26:47,526] Rahuls-MacBook-Air/INFO/locust.main: --run-time limit reached, shutting down
+[2026-04-10 17:26:47,531] Rahuls-MacBook-Air/INFO/botocore.credentials: Found credentials in environment variables.
+[2026-04-10 17:26:48,289] Rahuls-MacBook-Air/INFO/circuit_1hop: [1hop] uploaded results to s3://hopvault-experiment-results-378591034789-us-west-2/experiment-1/1-hop/20260410T212647Z_stats.csv
+[2026-04-10 17:26:48,292] Rahuls-MacBook-Air/INFO/locust.main: Shutting down (exit code 0)

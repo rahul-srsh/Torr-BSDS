@@ -1,0 +1,37 @@
+[2026-04-10 17:13:51,214] Rahuls-MacBook-Air/INFO/locust.main: Starting Locust 2.43.3
+[2026-04-10 17:13:51,228] Rahuls-MacBook-Air/INFO/locust.runners: Shape test starting.
+[2026-04-10 17:13:51,228] Rahuls-MacBook-Air/INFO/locust.runners: Shape worker starting
+[2026-04-10 17:13:51,230] Rahuls-MacBook-Air/CRITICAL/locust.runners: Unhandled exception in greenlet: <Greenlet at 0x105a8ccc0: <bound method Runner.shape_worker of <locust.runners.LocalRunner object at 0x105a6b9e0>>>
+Traceback (most recent call last):
+  File "src/gevent/greenlet.py", line 900, in gevent._gevent_cgreenlet.Greenlet.run
+  File "/opt/anaconda3/lib/python3.12/site-packages/locust/runners.py", line 343, in shape_worker
+    current_tick = self.environment.shape_class.tick() if self.environment.shape_class is not None else None
+    ^^^^^^^^^^^^^^^^^
+  File "/Users/rahulsuresh/Downloads/Torr-BSDS/experiments/locust/echo_baseline.py", line 57, in tick
+    elapsed = self.get_current_run_time()
+    ^^^^^^^^^^^^^^^^^
+AttributeError: 'SteppedLoadShape' object has no attribute 'get_current_run_time'
+[2026-04-10 17:13:51,230] Rahuls-MacBook-Air/INFO/locust.main: --run-time limit reached, shutting down
+[2026-04-10 17:13:51,247] Rahuls-MacBook-Air/WARNING/echo_baseline: [baseline] no stats to upload
+[2026-04-10 17:13:51,247] Rahuls-MacBook-Air/INFO/locust.main: Shutting down (exit code 2)
+[2026-04-10 17:16:32,866] Rahuls-MacBook-Air/INFO/locust.main: Starting Locust 2.43.3
+[2026-04-10 17:16:32,869] Rahuls-MacBook-Air/INFO/locust.runners: Shape test starting.
+[2026-04-10 17:16:32,869] Rahuls-MacBook-Air/INFO/locust.runners: Shape worker starting
+[2026-04-10 17:16:32,869] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 10 users at 10.00 spawn rate
+[2026-04-10 17:16:32,869] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 10 users at a rate of 10.00 per second
+[2026-04-10 17:16:32,870] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"EchoBaselineUser": 10} (10 total users)
+[2026-04-10 17:17:32,997] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 50 users at 50.00 spawn rate
+[2026-04-10 17:17:32,999] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 50 users at a rate of 50.00 per second
+[2026-04-10 17:17:33,002] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"EchoBaselineUser": 50} (50 total users)
+[2026-04-10 17:18:33,128] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 100 users at 100.00 spawn rate
+[2026-04-10 17:18:33,129] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 100 users at a rate of 100.00 per second
+[2026-04-10 17:18:33,131] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"EchoBaselineUser": 100} (100 total users)
+[2026-04-10 17:19:33,271] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 200 users at 200.00 spawn rate
+[2026-04-10 17:19:33,271] Rahuls-MacBook-Air/WARNING/locust.runners: Your selected spawn rate is very high (>100), and this is known to sometimes cause issues. Do you really need to ramp up that fast?
+[2026-04-10 17:19:33,271] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 200 users at a rate of 200.00 per second
+[2026-04-10 17:19:33,275] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"EchoBaselineUser": 200} (200 total users)
+[2026-04-10 17:20:33,440] Rahuls-MacBook-Air/INFO/locust.runners: Shape test stopping
+[2026-04-10 17:20:33,491] Rahuls-MacBook-Air/INFO/locust.main: --run-time limit reached, shutting down
+[2026-04-10 17:20:33,503] Rahuls-MacBook-Air/INFO/botocore.credentials: Found credentials in environment variables.
+[2026-04-10 17:20:34,367] Rahuls-MacBook-Air/INFO/echo_baseline: [baseline] uploaded results to s3://hopvault-experiment-results-378591034789-us-west-2/experiment-1/direct/20260410T212033Z_stats.csv
+[2026-04-10 17:20:34,369] Rahuls-MacBook-Air/INFO/locust.main: Shutting down (exit code 0)

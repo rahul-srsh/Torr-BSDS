@@ -1,7 +1,7 @@
 variable "directory_server_url" {
-  description = "URL of the directory server used by nodes for self-registration. Set after phase-1 deploy once the directory server's public IP is known."
+  description = "URL of the directory server used by nodes for self-registration. Set after the directory server's public IP is known. Pass as -var or TF_VAR_directory_server_url."
   type        = string
-  default     = "http://localhost:8080"
+  default     = ""
 }
 
 data "aws_caller_identity" "current" {}
@@ -10,10 +10,6 @@ data "aws_region" "current" {}
 
 data "aws_availability_zones" "available" {
   state = "available"
-}
-
-data "aws_iam_role" "lab_role" {
-  name = "LabRole"
 }
 
 locals {
