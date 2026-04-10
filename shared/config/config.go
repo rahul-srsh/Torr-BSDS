@@ -18,7 +18,7 @@ func Load() *NodeConfig {
 	cfg := &NodeConfig{
 		Port:                     getEnv("PORT", "8080"),
 		NodeType:                 getEnv("NODE_TYPE", "unknown"),
-		DirectoryServerURL:       getEnv("DIRECTORY_SERVER_URL", "http://localhost:8080"),
+		DirectoryServerURL:       mustGetEnv("DIRECTORY_SERVER_URL"),
 		HeartbeatCleanupInterval: getDurationEnv("HEARTBEAT_CLEANUP_INTERVAL", 15*time.Second),
 		HeartbeatTimeout:         getDurationEnv("HEARTBEAT_TIMEOUT", 30*time.Second),
 	}
@@ -37,6 +37,14 @@ func getEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+func mustGetEnv(key string) string {
+	val, ok := os.LookupEnv(key)
+	if !ok || val == "" {
+		log.Fatalf("[config] required environment variable %s is not set", key)
+	}
+	return val
 }
 
 func getDurationEnv(key string, fallback time.Duration) time.Duration {

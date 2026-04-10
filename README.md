@@ -43,7 +43,7 @@ curl http://localhost:8080/health
 |---|---|---|
 | `PORT` | `8080` | Port the server listens on |
 | `NODE_TYPE` | `unknown` | Type of node (guard, relay, exit, directory-server, echo-server) |
-| `DIRECTORY_SERVER_URL` | `http://localhost:8080` | URL of the directory server |
+| `DIRECTORY_SERVER_URL` | **required** | URL of the directory server — process refuses to start if unset |
 
 ## Testing
 

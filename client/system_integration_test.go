@@ -209,14 +209,17 @@ func newSystemHarness(t *testing.T) *systemHarness {
 	t.Cleanup(restoreLog)
 
 	directoryPort := reserveTCPPort(t)
-	directoryURL, stopDir := startGoService(t, filepath.Join("..", "directory-server"), directoryPort, map[string]string{
-		"NODE_TYPE": "directory-server",
+	directoryURL := fmt.Sprintf("http://127.0.0.1:%d", directoryPort)
+	_, stopDir := startGoService(t, filepath.Join("..", "directory-server"), directoryPort, map[string]string{
+		"NODE_TYPE":            "directory-server",
+		"DIRECTORY_SERVER_URL": directoryURL, // required by config.Load; unused by the directory server itself
 	})
 	t.Cleanup(stopDir)
 
 	echoPort := reserveTCPPort(t)
 	echoURL, stopEcho := startGoService(t, filepath.Join("..", "echo-server"), echoPort, map[string]string{
-		"NODE_TYPE": "echo-server",
+		"NODE_TYPE":            "echo-server",
+		"DIRECTORY_SERVER_URL": directoryURL, // required by config.Load; unused by the echo server itself
 	})
 	t.Cleanup(stopEcho)
 

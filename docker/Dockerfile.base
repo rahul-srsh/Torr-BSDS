@@ -22,10 +22,10 @@ WORKDIR /app
 
 COPY --from=builder /node-server .
 
-# Default env vars
+# Default env vars (DIRECTORY_SERVER_URL is intentionally omitted — it is required
+# and must be injected at deploy time; the process will refuse to start without it)
 ENV PORT=8080
 ENV NODE_TYPE=unknown
-ENV DIRECTORY_SERVER_URL=http://localhost:8080
 
 EXPOSE 8080
 

@@ -6,10 +6,12 @@ import (
 	"time"
 )
 
+// TestLoadUsesDefaults verifies optional fields fall back to their defaults.
+// DIRECTORY_SERVER_URL has no default and must always be supplied explicitly.
 func TestLoadUsesDefaults(t *testing.T) {
 	unsetEnv(t, "PORT")
 	unsetEnv(t, "NODE_TYPE")
-	unsetEnv(t, "DIRECTORY_SERVER_URL")
+	setEnv(t, "DIRECTORY_SERVER_URL", "http://directory-server:8080") // required — no default
 	unsetEnv(t, "HEARTBEAT_CLEANUP_INTERVAL")
 	unsetEnv(t, "HEARTBEAT_TIMEOUT")
 
@@ -21,8 +23,8 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.NodeType != "unknown" {
 		t.Fatalf("NodeType = %q, want %q", cfg.NodeType, "unknown")
 	}
-	if cfg.DirectoryServerURL != "http://localhost:8080" {
-		t.Fatalf("DirectoryServerURL = %q, want %q", cfg.DirectoryServerURL, "http://localhost:8080")
+	if cfg.DirectoryServerURL != "http://directory-server:8080" {
+		t.Fatalf("DirectoryServerURL = %q, want %q", cfg.DirectoryServerURL, "http://directory-server:8080")
 	}
 	if cfg.HeartbeatCleanupInterval != 15*time.Second {
 		t.Fatalf("HeartbeatCleanupInterval = %s, want %s", cfg.HeartbeatCleanupInterval, 15*time.Second)
