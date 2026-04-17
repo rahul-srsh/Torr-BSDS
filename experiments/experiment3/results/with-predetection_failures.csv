@@ -1,0 +1,3 @@
+Method,Name,Error,Occurrences
+circuit_request,3-hop-failure-recovery,"TypeError('Cannot convert ""<class \'NoneType\'>"" instance to a buffer.')",21
+circuit_request,3-hop-failure-recovery,RuntimeError('POST http://18.215.187.131:8080/onion returned 502: next hop unreachable\n'),21

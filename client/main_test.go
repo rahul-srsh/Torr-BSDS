@@ -2,16 +2,20 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	onion "github.com/rahul-srsh/Torr-BSDS/shared/onion"
 )
@@ -399,4 +403,336 @@ func nodeRecordFromURL(t *testing.T, id, nodeType, rawURL, pubPEM string) NodeRe
 	return NodeRecord{NodeRegistration: NodeRegistration{
 		NodeID: id, NodeType: nodeType, Host: u.Hostname(), Port: port, PublicKey: pubPEM,
 	}}
+}
+
+// TestIdentifyFailedHop verifies that the hop identification logic correctly
+// determines which node in the circuit caused a failure.
+func TestIdentifyFailedHop(t *testing.T) {
+	circuit := &CircuitResponse{
+		Guard: NodeRecord{NodeRegistration: NodeRegistration{NodeID: "guard-1"}},
+		Relay: NodeRecord{NodeRegistration: NodeRegistration{NodeID: "relay-1"}},
+		Exit:  NodeRecord{NodeRegistration: NodeRegistration{NodeID: "exit-1"}},
+	}
+
+	tests := []struct {
+		name     string
+		errMsg   string
+		wantHop  string
+		wantNode string
+	}{
+		{"guard in message", "setup key for guard-1: connection refused", "guard", "guard-1"},
+		{"relay in message", "send to relay failed", "relay", "relay-1"},
+		{"exit in message", "exit node timeout", "exit", "exit-1"},
+		{"unknown", "some random error", "unknown", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hop, nodeID := identifyFailedHop(fmt.Errorf("%s", tc.errMsg), circuit)
+			if hop != tc.wantHop {
+				t.Errorf("hop = %q, want %q", hop, tc.wantHop)
+			}
+			if nodeID != tc.wantNode {
+				t.Errorf("nodeID = %q, want %q", nodeID, tc.wantNode)
+			}
+		})
+	}
+}
+
+// TestExecuteRequestWithRebuildTracking verifies that rebuild events are
+// recorded when a circuit fails and the client retries.
+func TestExecuteRequestWithRebuildTracking(t *testing.T) {
+	const destBody = `{"from":"rebuild-tracking"}`
+
+	goodGuardPriv, goodGuardPubPEM := genTestKeyPair(t)
+	goodRelayPriv, goodRelayPubPEM := genTestKeyPair(t)
+	goodExitPriv, goodExitPubPEM := genTestKeyPair(t)
+
+	exitKS := onion.NewKeyStore()
+	exitH := onion.NewExitHandler(exitKS, http.DefaultClient)
+	exitSrv := httptest.NewServer(http.NewServeMux())
+	exitMux := http.NewServeMux()
+	exitMux.HandleFunc("/key", exitH.HandleKey)
+	exitMux.HandleFunc("/onion", exitH.HandleOnion)
+	exitMux.HandleFunc("/setup", onion.HandleSetup(exitKS, goodExitPriv))
+	exitSrv.Close()
+	exitSrv = httptest.NewServer(exitMux)
+	t.Cleanup(exitSrv.Close)
+
+	relayKS := onion.NewKeyStore()
+	relayH := onion.NewHandler(relayKS, http.DefaultClient, "relay")
+	relayMux := http.NewServeMux()
+	relayMux.HandleFunc("/key", relayH.HandleKey)
+	relayMux.HandleFunc("/onion", relayH.HandleOnion)
+	relayMux.HandleFunc("/setup", onion.HandleSetup(relayKS, goodRelayPriv))
+	relaySrv := httptest.NewServer(relayMux)
+	t.Cleanup(relaySrv.Close)
+
+	guardKS := onion.NewKeyStore()
+	guardH := onion.NewHandler(guardKS, http.DefaultClient, "guard")
+	guardMux := http.NewServeMux()
+	guardMux.HandleFunc("/key", guardH.HandleKey)
+	guardMux.HandleFunc("/onion", guardH.HandleOnion)
+	guardMux.HandleFunc("/setup", onion.HandleSetup(guardKS, goodGuardPriv))
+	guardSrv := httptest.NewServer(guardMux)
+	t.Cleanup(guardSrv.Close)
+
+	dest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(destBody))
+	}))
+	t.Cleanup(dest.Close)
+
+	// Directory: first call returns a dead guard, subsequent calls return good nodes.
+	var dirCalls int32
+	dirSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/circuit" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		dirCalls++
+		if dirCalls == 1 {
+			_ = json.NewEncoder(w).Encode(CircuitResponse{
+				Guard: NodeRecord{NodeRegistration: NodeRegistration{
+					NodeID: "dead-guard", NodeType: "guard", Host: "127.0.0.1", Port: 1,
+					PublicKey: goodGuardPubPEM,
+				}},
+				Relay: nodeRecordFromURL(t, "r1", "relay", relaySrv.URL, goodRelayPubPEM),
+				Exit:  nodeRecordFromURL(t, "e1", "exit", exitSrv.URL, goodExitPubPEM),
+			})
+		} else {
+			_ = json.NewEncoder(w).Encode(CircuitResponse{
+				Guard: nodeRecordFromURL(t, "g1", "guard", guardSrv.URL, goodGuardPubPEM),
+				Relay: nodeRecordFromURL(t, "r1", "relay", relaySrv.URL, goodRelayPubPEM),
+				Exit:  nodeRecordFromURL(t, "e1", "exit", exitSrv.URL, goodExitPubPEM),
+			})
+		}
+	}))
+	t.Cleanup(dirSrv.Close)
+
+	result, err := ExecuteRequestWithRebuildTracking(
+		&http.Client{Timeout: 2 * time.Second},
+		dirSrv.URL, "rebuild-test-1",
+		onion.ExitLayer{URL: dest.URL, Method: http.MethodGet},
+		3, 3,
+	)
+	if err != nil {
+		t.Fatalf("ExecuteRequestWithRebuildTracking: %v", err)
+	}
+	if string(result.Response.Body) != destBody {
+		t.Fatalf("body = %q, want %q", result.Response.Body, destBody)
+	}
+	if len(result.RebuildEvents) != 1 {
+		t.Fatalf("got %d rebuild events, want 1", len(result.RebuildEvents))
+	}
+	evt := result.RebuildEvents[0]
+	if evt.Attempt != 2 {
+		t.Fatalf("rebuild attempt = %d, want 2", evt.Attempt)
+	}
+	if evt.FailedHop != "guard" {
+		t.Fatalf("failedHop = %q, want guard", evt.FailedHop)
+	}
+	if evt.FailedNodeID != "dead-guard" {
+		t.Fatalf("failedNodeID = %q, want dead-guard", evt.FailedNodeID)
+	}
+	if !evt.Success {
+		t.Fatal("rebuild event should be marked as success")
+	}
+	if evt.RebuildMs <= 0 {
+		t.Fatalf("rebuildMs = %d, want > 0", evt.RebuildMs)
+	}
+}
+
+// TestGetHealthyNodes verifies that GetHealthyNodes correctly parses the /nodes response.
+func TestGetHealthyNodes(t *testing.T) {
+	dirSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/nodes" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(NodesResponse{
+			Guard: []NodeRecord{{NodeRegistration: NodeRegistration{NodeID: "g1"}}},
+			Relay: []NodeRecord{{NodeRegistration: NodeRegistration{NodeID: "r1"}}},
+			Exit:  []NodeRecord{{NodeRegistration: NodeRegistration{NodeID: "e1"}}},
+		})
+	}))
+	t.Cleanup(dirSrv.Close)
+
+	nodes, err := GetHealthyNodes(http.DefaultClient, dirSrv.URL)
+	if err != nil {
+		t.Fatalf("GetHealthyNodes: %v", err)
+	}
+	if len(nodes.Guard) != 1 || nodes.Guard[0].NodeID != "g1" {
+		t.Fatalf("guard nodes = %+v, want [g1]", nodes.Guard)
+	}
+	if len(nodes.Relay) != 1 || nodes.Relay[0].NodeID != "r1" {
+		t.Fatalf("relay nodes = %+v, want [r1]", nodes.Relay)
+	}
+	if len(nodes.Exit) != 1 || nodes.Exit[0].NodeID != "e1" {
+		t.Fatalf("exit nodes = %+v, want [e1]", nodes.Exit)
+	}
+}
+
+// TestCircuitStateNodeIDs verifies that CircuitState.NodeIDs returns the correct IDs.
+func TestCircuitStateNodeIDs(t *testing.T) {
+	cs := &CircuitState{
+		Circuit: &CircuitResponse{
+			Guard: NodeRecord{NodeRegistration: NodeRegistration{NodeID: "g1"}},
+			Relay: NodeRecord{NodeRegistration: NodeRegistration{NodeID: "r1"}},
+			Exit:  NodeRecord{NodeRegistration: NodeRegistration{NodeID: "e1"}},
+		},
+		Hops: 3,
+	}
+	ids := cs.NodeIDs()
+	if len(ids) != 3 || ids[0] != "g1" || ids[1] != "r1" || ids[2] != "e1" {
+		t.Fatalf("NodeIDs() = %v, want [g1, r1, e1]", ids)
+	}
+
+	cs.Hops = 1
+	ids = cs.NodeIDs()
+	if len(ids) != 1 || ids[0] != "g1" {
+		t.Fatalf("NodeIDs(1-hop) = %v, want [g1]", ids)
+	}
+}
+
+// TestParseClientConfigHealthCheck verifies parsing of the --health-check and --max-retries flags.
+func TestParseClientConfigHealthCheck(t *testing.T) {
+	cfg, err := parseClientConfig([]string{
+		"--directory-url", "http://directory",
+		"--destination-url", "http://destination",
+		"--health-check",
+		"--max-retries", "5",
+	})
+	if err != nil {
+		t.Fatalf("parseClientConfig: %v", err)
+	}
+	if !cfg.HealthCheck {
+		t.Fatal("HealthCheck should be true")
+	}
+	if cfg.MaxRetries != 5 {
+		t.Fatalf("MaxRetries = %d, want 5", cfg.MaxRetries)
+	}
+
+	defaultCfg, err := parseClientConfig([]string{
+		"--directory-url", "http://directory",
+		"--destination-url", "http://destination",
+	})
+	if err != nil {
+		t.Fatalf("parseClientConfig default: %v", err)
+	}
+	if defaultCfg.HealthCheck {
+		t.Fatal("default HealthCheck should be false")
+	}
+	if defaultCfg.MaxRetries != DefaultMaxCircuitAttempts {
+		t.Fatalf("default MaxRetries = %d, want %d", defaultCfg.MaxRetries, DefaultMaxCircuitAttempts)
+	}
+}
+
+// TestHealthCheckerProactiveRebuild verifies that the health-check goroutine
+// detects when a circuit node becomes unhealthy and proactively rebuilds.
+func TestHealthCheckerProactiveRebuild(t *testing.T) {
+	guardPriv, guardPubPEM := genTestKeyPair(t)
+	relayPriv, relayPubPEM := genTestKeyPair(t)
+	exitPriv, exitPubPEM := genTestKeyPair(t)
+
+	// Good nodes for the new circuit.
+	guardKS := onion.NewKeyStore()
+	guardMux := http.NewServeMux()
+	guardMux.HandleFunc("/setup", onion.HandleSetup(guardKS, guardPriv))
+	guardSrv := httptest.NewServer(guardMux)
+	t.Cleanup(guardSrv.Close)
+
+	relayKS := onion.NewKeyStore()
+	relayMux := http.NewServeMux()
+	relayMux.HandleFunc("/setup", onion.HandleSetup(relayKS, relayPriv))
+	relaySrv := httptest.NewServer(relayMux)
+	t.Cleanup(relaySrv.Close)
+
+	exitKS := onion.NewKeyStore()
+	exitMux := http.NewServeMux()
+	exitMux.HandleFunc("/setup", onion.HandleSetup(exitKS, exitPriv))
+	exitSrv := httptest.NewServer(exitMux)
+	t.Cleanup(exitSrv.Close)
+
+	// Track what /nodes and /circuit return.
+	var mu sync.Mutex
+	deadNodeRemoved := false
+
+	dirSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		removed := deadNodeRemoved
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/nodes":
+			resp := NodesResponse{
+				Guard: []NodeRecord{
+					{NodeRegistration: NodeRegistration{NodeID: "g1"}},
+				},
+				Exit: []NodeRecord{
+					{NodeRegistration: NodeRegistration{NodeID: "e1"}},
+				},
+			}
+			if !removed {
+				// Relay r1 is still healthy.
+				resp.Relay = []NodeRecord{{NodeRegistration: NodeRegistration{NodeID: "r1"}}}
+			} else {
+				// r1 is dead; only r2 is healthy.
+				resp.Relay = []NodeRecord{{NodeRegistration: NodeRegistration{NodeID: "r2"}}}
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/circuit":
+			_ = json.NewEncoder(w).Encode(CircuitResponse{
+				Guard: nodeRecordFromURL(t, "g1", "guard", guardSrv.URL, guardPubPEM),
+				Relay: nodeRecordFromURL(t, "r2", "relay", relaySrv.URL, relayPubPEM),
+				Exit:  nodeRecordFromURL(t, "e1", "exit", exitSrv.URL, exitPubPEM),
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(dirSrv.Close)
+
+	// Set up initial circuit state with r1 as relay.
+	state := &CircuitState{
+		Circuit: &CircuitResponse{
+			Guard: NodeRecord{NodeRegistration: NodeRegistration{NodeID: "g1"}},
+			Relay: NodeRecord{NodeRegistration: NodeRegistration{NodeID: "r1"}},
+			Exit:  NodeRecord{NodeRegistration: NodeRegistration{NodeID: "e1"}},
+		},
+		CircuitID: "health-check-test",
+		Hops:      3,
+		Ready:     true,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start health checker with a very short interval for testing.
+	StartHealthChecker(ctx, http.DefaultClient, dirSrv.URL, state, 50*time.Millisecond)
+
+	// Let it poll once — circuit should remain unchanged (r1 is healthy).
+	time.Sleep(100 * time.Millisecond)
+	state.mu.RLock()
+	if state.Circuit.Relay.NodeID != "r1" {
+		t.Fatalf("relay should still be r1, got %s", state.Circuit.Relay.NodeID)
+	}
+	state.mu.RUnlock()
+
+	// Simulate r1 going down.
+	mu.Lock()
+	deadNodeRemoved = true
+	mu.Unlock()
+
+	// Wait for health checker to detect and rebuild.
+	time.Sleep(200 * time.Millisecond)
+	state.mu.RLock()
+	newRelayID := state.Circuit.Relay.NodeID
+	state.mu.RUnlock()
+
+	if newRelayID != "r2" {
+		t.Fatalf("after health check, relay = %q, want r2", newRelayID)
+	}
 }

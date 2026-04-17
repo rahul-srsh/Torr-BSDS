@@ -1,0 +1,10 @@
+{
+  "cluster": "hopvault-cluster",
+  "service": "relay-node",
+  "taskId": "2ddf654eb61d43d78d0e70ce0cb4e90a",
+  "nodeId": "unknown",
+  "killTimestamp": "2026-04-17T20:05:59.773773+00:00",
+  "killTimestampMs": 1776456359773,
+  "success": true,
+  "dryRun": false
+}

@@ -20,6 +20,8 @@ type clientConfig struct {
 	Body           string
 	Hops           int
 	Timeout        time.Duration
+	MaxRetries     int
+	HealthCheck    bool
 }
 
 func parseClientConfig(args []string) (*clientConfig, error) {
@@ -32,7 +34,9 @@ func parseClientConfig(args []string) (*clientConfig, error) {
 	fs.StringVar(&cfg.Method, "method", http.MethodGet, "HTTP method")
 	fs.StringVar(&cfg.Body, "body", "", "request body")
 	fs.IntVar(&cfg.Hops, "hops", 3, "hop count (1 or 3)")
-	fs.DurationVar(&cfg.Timeout, "timeout", 15*time.Second, "HTTP client timeout")
+	fs.DurationVar(&cfg.Timeout, "timeout", DefaultCircuitTimeout, "HTTP client timeout")
+	fs.IntVar(&cfg.MaxRetries, "max-retries", DefaultMaxCircuitAttempts, "max circuit rebuild attempts")
+	fs.BoolVar(&cfg.HealthCheck, "health-check", false, "enable background health-check pre-detection")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -67,12 +71,17 @@ func runClient(cfg *clientConfig, stdout io.Writer) error {
 		exitLayer.Body = []byte(cfg.Body)
 	}
 
-	exitResp, err := ExecuteRequestWithHops(client, cfg.DirectoryURL, circuitID, exitLayer, cfg.Hops)
+	result, err := ExecuteRequestWithRebuildTracking(client, cfg.DirectoryURL, circuitID, exitLayer, cfg.Hops, cfg.MaxRetries)
 	if err != nil {
 		return err
 	}
 
-	if _, err := stdout.Write(exitResp.Body); err != nil {
+	for _, evt := range result.RebuildEvents {
+		log.Printf("[client] rebuild: attempt=%d hop=%s node=%s success=%v ms=%d",
+			evt.Attempt, evt.FailedHop, evt.FailedNodeID, evt.Success, evt.RebuildMs)
+	}
+
+	if _, err := stdout.Write(result.Response.Body); err != nil {
 		return fmt.Errorf("write response body: %w", err)
 	}
 

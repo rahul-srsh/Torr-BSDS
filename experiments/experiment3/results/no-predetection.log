@@ -1,0 +1,15 @@
+[2026-04-17 16:04:59,517] Rahuls-MacBook-Air/INFO/locust.main: Starting Locust 2.34.0
+[2026-04-17 16:04:59,517] Rahuls-MacBook-Air/WARNING/locust.main: Python 3.9 support is deprecated and will be removed soon
+[2026-04-17 16:04:59,524] Rahuls-MacBook-Air/WARNING/locust.main: --run-time, --users or --spawn-rate have no impact on LoadShapes unless the shape class explicitly reads them. See: docs.locust.io/en/stable/custom-load-shape.html#use-common-options
+[2026-04-17 16:04:59,524] Rahuls-MacBook-Air/WARNING/locust.main: The following option(s) will be ignored: --users, --spawn-rate, --run-time
+[2026-04-17 16:04:59,525] Rahuls-MacBook-Air/INFO/locust.runners: Shape test starting.
+[2026-04-17 16:04:59,525] Rahuls-MacBook-Air/INFO/locust.runners: Shape worker starting
+[2026-04-17 16:04:59,525] Rahuls-MacBook-Air/INFO/locust.runners: Shape test updating to 50 users at 50.00 spawn rate
+[2026-04-17 16:04:59,525] Rahuls-MacBook-Air/INFO/locust.runners: Ramping to 50 users at a rate of 50.00 per second
+[2026-04-17 16:04:59,527] Rahuls-MacBook-Air/INFO/locust.runners: All users spawned: {"FailureRecoveryUser": 50} (50 total users)
+[2026-04-17 16:09:59,951] Rahuls-MacBook-Air/INFO/locust.runners: Shape test stopping
+[2026-04-17 16:10:00,005] Rahuls-MacBook-Air/INFO/locust.main: --run-time limit reached, shutting down
+[2026-04-17 16:10:00,005] Rahuls-MacBook-Air/INFO/locust.main: Run time limit set to 300 seconds
+[2026-04-17 16:10:00,133] Rahuls-MacBook-Air/INFO/locustfile: [exp3] wrote 96772 rows to results/no-predetection_20260417T201000Z.csv
+[2026-04-17 16:10:00,133] Rahuls-MacBook-Air/INFO/locustfile: [exp3] EXPERIMENT_RESULTS_BUCKET not set — skipping S3 upload
+[2026-04-17 16:10:00,133] Rahuls-MacBook-Air/INFO/locust.main: Shutting down (exit code 1)
