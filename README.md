@@ -126,6 +126,10 @@ If the echo server's JSON response comes back on stdout, the full onion
 flow — directory lookup, RSA key exchange, 3-layer AES wrap, forward path,
 destination round-trip, 3-layer unwrap — is working.
 
+For the full client CLI reference (all flags, POST bodies, 1-hop mode,
+health-check polling, building a standalone binary, troubleshooting), see
+**[USEME.md](USEME.md)**.
+
 To tear everything down:
 
 ```bash
