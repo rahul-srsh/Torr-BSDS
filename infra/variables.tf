@@ -4,6 +4,12 @@ variable "directory_server_url" {
   default     = ""
 }
 
+variable "forward_target_url" {
+  description = "Target URL the guard node forwards baseline 1-hop traffic to (the echo server). Set after the echo server's IP is known. Pass as -var or TF_VAR_forward_target_url."
+  type        = string
+  default     = ""
+}
+
 data "aws_caller_identity" "current" {}
 
 data "aws_region" "current" {}

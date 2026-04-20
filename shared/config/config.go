@@ -1,3 +1,4 @@
+// Package config loads HopVault node configuration from environment variables.
 package config
 
 import (

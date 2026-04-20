@@ -22,11 +22,22 @@ type echoResponse struct {
 	Timestamp time.Time         `json:"timestamp"`
 }
 
-func main() {
-	cfg := config.Load()
+var (
+	loadConfig  = config.Load
+	startServer = defaultStartServer
+)
+
+func defaultStartServer(s *sharedserver.BaseServer) { s.Start() }
+
+func run() {
+	cfg := loadConfig()
 	srv := sharedserver.New(cfg)
 	srv.Mux.HandleFunc("/echo", echoHandler(cfg.NodeType))
-	srv.Start()
+	startServer(srv)
+}
+
+func main() {
+	run()
 }
 
 func echoHandler(nodeType string) http.HandlerFunc {

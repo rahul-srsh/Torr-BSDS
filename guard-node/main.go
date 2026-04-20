@@ -18,49 +18,62 @@ import (
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
-func main() {
-	cfg := config.Load()
+var (
+	loadConfig        = config.Load
+	newIdentity       = defaultNewIdentity
+	startServer       = defaultStartServer
+	startRegistration = defaultStartRegistration
+	getForwardTarget  = defaultGetForwardTarget
+)
 
-	// ── Node self-registration ────────────────────────────────────────────────
-	nodeID, err := node.GenerateNodeID()
+func defaultNewIdentity() (*node.Identity, error) { return node.NewIdentity(httpClient) }
+func defaultStartServer(s *sharedserver.BaseServer) { s.Start() }
+func defaultStartRegistration(ctx context.Context, cfg *node.Config) {
+	go node.StartWithBackoff(ctx, cfg)
+}
+func defaultGetForwardTarget() string {
+	return strings.TrimRight(os.Getenv("FORWARD_TARGET_URL"), "/")
+}
+
+func run() error {
+	cfg := loadConfig()
+
+	identity, err := newIdentity()
 	if err != nil {
-		log.Fatalf("[guard] generate node ID: %v", err)
-	}
-	privKey, pubKeyPEM, err := node.GenerateKeyPair()
-	if err != nil {
-		log.Fatalf("[guard] generate key pair: %v", err)
-	}
-	host, err := node.ResolveOwnAddress(httpClient)
-	if err != nil {
-		log.Printf("[guard] resolve address: %v — continuing with empty host", err)
+		return err
 	}
 	port, _ := strconv.Atoi(cfg.Port)
 
 	regCfg := &node.Config{
-		NodeID:       nodeID,
+		NodeID:       identity.NodeID,
 		NodeType:     cfg.NodeType,
-		Host:         host,
+		Host:         identity.Host,
 		Port:         port,
-		PublicKeyPEM: pubKeyPEM,
-		PrivateKey:   privKey,
+		PublicKeyPEM: identity.PublicKeyPEM,
+		PrivateKey:   identity.PrivateKey,
 		DirectoryURL: cfg.DirectoryServerURL,
 		HTTPClient:   &http.Client{Timeout: 5 * time.Second},
 	}
-	go node.StartWithBackoff(context.Background(), regCfg)
+	startRegistration(context.Background(), regCfg)
 
-	// ── HTTP routes ───────────────────────────────────────────────────────────
 	srv := sharedserver.New(cfg)
 
-	targetURL := strings.TrimRight(os.Getenv("FORWARD_TARGET_URL"), "/")
-	srv.Mux.HandleFunc("/forward/echo", forwardEchoHandler(targetURL, httpClient))
+	srv.Mux.HandleFunc("/forward/echo", forwardEchoHandler(getForwardTarget(), httpClient))
 
 	keys := onion.NewKeyStore()
 	h := onion.NewHandlerWithDirectExit(keys, httpClient, "guard")
 	srv.Mux.HandleFunc("/key", h.HandleKey)
 	srv.Mux.HandleFunc("/onion", h.HandleOnion)
-	srv.Mux.HandleFunc("/setup", onion.HandleSetup(keys, privKey))
+	srv.Mux.HandleFunc("/setup", onion.HandleSetup(keys, identity.PrivateKey))
 
-	srv.Start()
+	startServer(srv)
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatalf("[guard] %v", err)
+	}
 }
 
 func forwardEchoHandler(targetBaseURL string, client *http.Client) http.HandlerFunc {

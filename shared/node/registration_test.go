@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -383,6 +384,225 @@ func TestResolveOwnAddressUsesECSMetadata(t *testing.T) {
 	}
 	if addr != "10.0.2.55" {
 		t.Fatalf("addr = %q, want 10.0.2.55", addr)
+	}
+}
+
+// ---- NewIdentity ----
+
+func TestNewIdentityReturnsAllFields(t *testing.T) {
+	id, err := NewIdentity(http.DefaultClient)
+	if err != nil {
+		t.Fatalf("NewIdentity: %v", err)
+	}
+	if id.NodeID == "" {
+		t.Fatal("NodeID is empty")
+	}
+	if id.PrivateKey == nil {
+		t.Fatal("PrivateKey is nil")
+	}
+	if !strings.Contains(id.PublicKeyPEM, "BEGIN PUBLIC KEY") {
+		t.Fatalf("PublicKeyPEM missing header: %s", id.PublicKeyPEM[:min(80, len(id.PublicKeyPEM))])
+	}
+	// Host may be empty if resolution fails — that's fine, logged only.
+}
+
+// ---- publicIPFromCheckIP ----
+
+func TestPublicIPFromCheckIPReturnsBody(t *testing.T) {
+	// Override the checkip URL by standing up a local server that pretends to be it
+	// via a custom transport.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "203.0.113.55\n")
+	}))
+	defer srv.Close()
+
+	rewriteTransport := roundTripRewrite{url: srv.URL}
+	client := &http.Client{Transport: rewriteTransport, Timeout: 2 * time.Second}
+
+	ip, err := publicIPFromCheckIP(client)
+	if err != nil {
+		t.Fatalf("publicIPFromCheckIP: %v", err)
+	}
+	if ip != "203.0.113.55" {
+		t.Fatalf("ip = %q, want 203.0.113.55", ip)
+	}
+}
+
+func TestPublicIPFromCheckIPEmptyBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+
+	client := &http.Client{Transport: roundTripRewrite{url: srv.URL}, Timeout: 2 * time.Second}
+	if _, err := publicIPFromCheckIP(client); err == nil {
+		t.Fatal("expected error for empty body")
+	}
+}
+
+func TestPublicIPFromCheckIPUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+
+	client := &http.Client{Transport: roundTripRewrite{url: url}, Timeout: 100 * time.Millisecond}
+	if _, err := publicIPFromCheckIP(client); err == nil {
+		t.Fatal("expected error when server is unreachable")
+	}
+}
+
+type roundTripRewrite struct {
+	url string
+}
+
+func (r roundTripRewrite) RoundTrip(req *http.Request) (*http.Response, error) {
+	u, err := url.Parse(r.url)
+	if err != nil {
+		return nil, err
+	}
+	req.URL.Scheme = u.Scheme
+	req.URL.Host = u.Host
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// ---- ipFromECSMetadata ----
+
+func TestIPFromECSMetadataBadJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "{bad")
+	}))
+	defer srv.Close()
+	if _, err := ipFromECSMetadata(http.DefaultClient, srv.URL); err == nil {
+		t.Fatal("expected error for bad JSON")
+	}
+}
+
+func TestIPFromECSMetadataNoIPv4(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"Containers":[{"Networks":[{}]}]}`)
+	}))
+	defer srv.Close()
+	if _, err := ipFromECSMetadata(http.DefaultClient, srv.URL); err == nil {
+		t.Fatal("expected error for no IPv4")
+	}
+}
+
+func TestIPFromECSMetadataUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	client := &http.Client{Timeout: 100 * time.Millisecond}
+	if _, err := ipFromECSMetadata(client, url); err == nil {
+		t.Fatal("expected error when unreachable")
+	}
+}
+
+// ---- ResolveOwnAddress extra paths ----
+
+func TestResolveOwnAddressFallsThroughECSMetadataFailure(t *testing.T) {
+	// checkip blocked, ECS metadata returns bad data → fall back to hostname.
+	badMeta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "{bad")
+	}))
+	defer badMeta.Close()
+
+	t.Setenv("ECS_CONTAINER_METADATA_URI_V4", badMeta.URL)
+	t.Setenv("ECS_CONTAINER_METADATA_URI", "")
+
+	noInternet := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				host, _, _ := net.SplitHostPort(addr)
+				if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+					return (&net.Dialer{}).DialContext(ctx, network, addr)
+				}
+				return nil, fmt.Errorf("blocked")
+			},
+		},
+		Timeout: 500 * time.Millisecond,
+	}
+
+	addr, err := ResolveOwnAddress(noInternet)
+	if err != nil {
+		t.Fatalf("ResolveOwnAddress: %v", err)
+	}
+	if addr == "" {
+		t.Fatal("expected hostname fallback")
+	}
+}
+
+// ---- StartWithBackoff ----
+
+func TestStartWithBackoffCancelsDuringBackoff(t *testing.T) {
+	dir := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusServiceUnavailable)
+	}))
+	defer dir.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	cfg := &Config{
+		NodeID: "backoff-cancel", NodeType: "guard", Host: "127.0.0.1", Port: 1,
+		DirectoryURL:      dir.URL,
+		HTTPClient:        http.DefaultClient,
+		HeartbeatInterval: time.Hour,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		StartWithBackoff(ctx, cfg)
+		close(done)
+	}()
+
+	// Cancel during the backoff window (first register failed, now sleeping).
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartWithBackoff did not return after context cancel")
+	}
+}
+
+// ---- Register request-building errors ----
+
+func TestRegisterFailsOnInvalidURL(t *testing.T) {
+	cfg := &Config{
+		NodeID: "id", NodeType: "guard", Host: "h", Port: 80,
+		DirectoryURL: "http://\x7f/bad", HTTPClient: http.DefaultClient,
+	}
+	if err := Register(context.Background(), cfg); err == nil {
+		t.Fatal("expected error for bad URL")
+	}
+}
+
+// ---- sendHeartbeat ----
+
+func TestHeartbeatFailsOnInvalidURL(t *testing.T) {
+	cfg := &Config{
+		NodeID:       "id",
+		NodeType:     "guard",
+		DirectoryURL: "http://\x7f",
+		HTTPClient:   http.DefaultClient,
+	}
+	if err := sendHeartbeat(context.Background(), cfg); err == nil {
+		t.Fatal("expected error for bad URL")
+	}
+}
+
+func TestHeartbeatFailsOnNon2xx(t *testing.T) {
+	dir := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer dir.Close()
+
+	cfg := &Config{
+		NodeID:       "id",
+		NodeType:     "guard",
+		DirectoryURL: dir.URL,
+		HTTPClient:   http.DefaultClient,
+	}
+	if err := sendHeartbeat(context.Background(), cfg); err == nil {
+		t.Fatal("expected error for non-2xx heartbeat")
 	}
 }
 

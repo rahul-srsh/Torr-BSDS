@@ -6,6 +6,7 @@
 *.dylib
 client/client
 directory-server/directory-server
+echo-server/echo-server
 exit-node/exit-node
 guard-node/guard-node
 relay-node/relay-node

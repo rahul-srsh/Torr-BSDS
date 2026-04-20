@@ -680,7 +680,6 @@ func TestRunClientUnreachableNodeReturnsClearError(t *testing.T) {
 // /setup fails (unreachable guard), ExecuteRequestWithHops fetches a fresh
 // circuit and succeeds on the next attempt without surfacing an error.
 func TestExecuteRequestRetryOnBadCircuit(t *testing.T) {
-	const circuitID = "retry-circuit-1"
 	const destBody = `{"from":"retry"}`
 
 	goodGuardPriv, goodGuardPubPEM := genIntegrationKeyPair(t)

@@ -72,6 +72,40 @@ func GenerateKeyPair() (*rsa.PrivateKey, string, error) {
 	return priv, pubPEM, nil
 }
 
+// Identity bundles the per-node material needed at startup: a random node ID,
+// an RSA key pair, and the node's externally routable address.
+type Identity struct {
+	NodeID       string
+	PrivateKey   *rsa.PrivateKey
+	PublicKeyPEM string
+	Host         string
+}
+
+// NewIdentity generates a fresh node identity by calling GenerateNodeID,
+// GenerateKeyPair, and ResolveOwnAddress. An empty host is returned (with a
+// log line) if address resolution fails; key or ID errors are propagated.
+func NewIdentity(client *http.Client) (*Identity, error) {
+	nodeID, err := GenerateNodeID()
+	if err != nil {
+		return nil, fmt.Errorf("generate node ID: %w", err)
+	}
+	priv, pubPEM, err := GenerateKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("generate key pair: %w", err)
+	}
+	host, err := ResolveOwnAddress(client)
+	if err != nil {
+		log.Printf("[node] resolve address: %v — continuing with empty host", err)
+		host = ""
+	}
+	return &Identity{
+		NodeID:       nodeID,
+		PrivateKey:   priv,
+		PublicKeyPEM: pubPEM,
+		Host:         host,
+	}, nil
+}
+
 // ecsTaskMeta is the subset of the ECS task metadata v3/v4 response we need.
 type ecsTaskMeta struct {
 	Containers []struct {

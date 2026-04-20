@@ -1,3 +1,5 @@
+// Package server provides the HTTP base used by every HopVault node: a shared
+// /health endpoint and an exported mux that services extend with their own routes.
 package server
 
 import (

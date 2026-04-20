@@ -73,7 +73,7 @@ resource "aws_ecs_task_definition" "services" {
       ] : [], each.key == "guard-node" ? [
         {
           name  = "FORWARD_TARGET_URL"
-          value = "http://10.0.1.130:8080"
+          value = var.forward_target_url
         },
       ] : [])
       portMappings = [

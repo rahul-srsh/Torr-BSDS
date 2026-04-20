@@ -5,8 +5,19 @@ import (
 	"github.com/rahul-srsh/Torr-BSDS/shared/server"
 )
 
-func main() {
-	cfg := config.Load()
+var (
+	loadConfig  = config.Load
+	startServer = defaultStartServer
+)
+
+func defaultStartServer(s *server.BaseServer) { s.Start() }
+
+func run() {
+	cfg := loadConfig()
 	srv := server.New(cfg)
-	srv.Start()
+	startServer(srv)
+}
+
+func main() {
+	run()
 }

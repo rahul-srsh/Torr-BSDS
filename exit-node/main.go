@@ -15,44 +15,54 @@ import (
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
-func main() {
-	cfg := config.Load()
+var (
+	loadConfig        = config.Load
+	newIdentity       = defaultNewIdentity
+	startServer       = defaultStartServer
+	startRegistration = defaultStartRegistration
+)
 
-	// ── Node self-registration ────────────────────────────────────────────────
-	nodeID, err := node.GenerateNodeID()
+func defaultNewIdentity() (*node.Identity, error) { return node.NewIdentity(httpClient) }
+func defaultStartServer(s *sharedserver.BaseServer) { s.Start() }
+func defaultStartRegistration(ctx context.Context, cfg *node.Config) {
+	go node.StartWithBackoff(ctx, cfg)
+}
+
+func run() error {
+	cfg := loadConfig()
+
+	identity, err := newIdentity()
 	if err != nil {
-		log.Fatalf("[exit] generate node ID: %v", err)
-	}
-	privKey, pubKeyPEM, err := node.GenerateKeyPair()
-	if err != nil {
-		log.Fatalf("[exit] generate key pair: %v", err)
-	}
-	host, err := node.ResolveOwnAddress(httpClient)
-	if err != nil {
-		log.Printf("[exit] resolve address: %v — continuing with empty host", err)
+		return err
 	}
 	port, _ := strconv.Atoi(cfg.Port)
 
 	regCfg := &node.Config{
-		NodeID:       nodeID,
+		NodeID:       identity.NodeID,
 		NodeType:     cfg.NodeType,
-		Host:         host,
+		Host:         identity.Host,
 		Port:         port,
-		PublicKeyPEM: pubKeyPEM,
-		PrivateKey:   privKey,
+		PublicKeyPEM: identity.PublicKeyPEM,
+		PrivateKey:   identity.PrivateKey,
 		DirectoryURL: cfg.DirectoryServerURL,
 		HTTPClient:   &http.Client{Timeout: 5 * time.Second},
 	}
-	go node.StartWithBackoff(context.Background(), regCfg)
+	startRegistration(context.Background(), regCfg)
 
-	// ── HTTP routes ───────────────────────────────────────────────────────────
 	srv := sharedserver.New(cfg)
 
 	keys := onion.NewKeyStore()
 	h := onion.NewExitHandler(keys, httpClient)
 	srv.Mux.HandleFunc("/key", h.HandleKey)
 	srv.Mux.HandleFunc("/onion", h.HandleOnion)
-	srv.Mux.HandleFunc("/setup", onion.HandleSetup(keys, privKey))
+	srv.Mux.HandleFunc("/setup", onion.HandleSetup(keys, identity.PrivateKey))
 
-	srv.Start()
+	startServer(srv)
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatalf("[exit] %v", err)
+	}
 }

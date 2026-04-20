@@ -1,3 +1,7 @@
+// Package onion implements the HopVault onion routing crypto and forwarding
+// layer: AES-256-GCM layer encryption, RSA-OAEP session-key transport, the
+// per-circuit KeyStore, and the /key /setup /onion HTTP handlers used by guard,
+// relay, and exit nodes.
 package onion
 
 import (
